@@ -25,7 +25,6 @@ import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
-import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
@@ -83,6 +82,8 @@ class FloatingBubbleService : Service() {
     private var bubble: ImageView? = null
     private var menu: View? = null
     private var editor: KeyCaptureFrame? = null
+    private var componentPicker: View? = null
+    private var resetConfirmation: View? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var menuParams: WindowManager.LayoutParams? = null
     private var editorParams: WindowManager.LayoutParams? = null
@@ -96,6 +97,10 @@ class FloatingBubbleService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         if (bubble == null && Settings.canDrawOverlays(this)) showBubble()
         return START_NOT_STICKY
     }
@@ -107,6 +112,8 @@ class FloatingBubbleService : Service() {
         removeOverlay(menu)
         removeOverlay(bubble)
         editor = null
+        componentPicker = null
+        resetConfirmation = null
         menu = null
         bubble = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE)
@@ -131,6 +138,12 @@ class FloatingBubbleService : Service() {
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val stopIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, FloatingBubbleService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(this, channelId)
         } else {
@@ -142,6 +155,7 @@ class FloatingBubbleService : Service() {
             .setContentText("Toque na bolha para editar os controles sobre o jogo.")
             .setContentIntent(openAppIntent)
             .setOngoing(true)
+            .addAction(R.drawable.ic_stat_nexoplay, "Desativar", stopIntent)
             .build()
 
         if (Build.VERSION.SDK_INT >= 34) {
@@ -238,6 +252,7 @@ class FloatingBubbleService : Service() {
             }
         )
         root.addView(actionButton("Editar keymap neste jogo") { openEditor() })
+        root.addView(actionButton("Desativar botão flutuante") { stopSelf() })
         root.addView(actionButton("Abrir NexoPlay") {
             closeMenu()
             startActivity(
@@ -332,34 +347,17 @@ class FloatingBubbleService : Service() {
             },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         )
-        titleRow.addView(actionButton("Concluir") { closeEditor() })
+        titleRow.addView(actionButton("Sair") { closeEditor() })
         header.addView(titleRow)
 
-        val instructions = TextView(this).apply {
-            text = "Adicione um controle e pressione a tecla. Arraste os indicadores para alinhar ao HUD."
-            textSize = 11f
-            setTextColor(0xFFB7C0CD.toInt())
-            setPadding(0, dp(6), 0, dp(6))
-        }
-        header.addView(instructions)
-
-        val componentScroller = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-        }
-        val componentButtons = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-        }
-        COMPONENT_TYPES.forEach { (type, label) ->
-            componentButtons.addView(
-                actionButton("+ $label") { addControl(type) },
-                LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    dp(38)
-                ).apply { marginEnd = dp(6) }
-            )
-        }
-        componentScroller.addView(componentButtons)
-        header.addView(componentScroller)
+        header.addView(
+            TextView(this).apply {
+                text = "Adicione controles, associe as teclas e posicione no HUD."
+                textSize = 11f
+                setTextColor(0xFFB7C0CD.toInt())
+                setPadding(0, dp(6), 0, dp(6))
+            }
+        )
         root.addView(
             header,
             FrameLayout.LayoutParams(
@@ -372,6 +370,212 @@ class FloatingBubbleService : Service() {
                 rightMargin = dp(8)
             }
         )
+        val actionsScroller = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+        }
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(actionButton("+ Adicionar") { showComponentPicker() })
+            addView(actionButton("Limpar") { showResetConfirmation() })
+            addView(actionButton("Salvar") {
+                writeControls(readControls())
+                Toast.makeText(this@FloatingBubbleService, "Mapeamento salvo.", Toast.LENGTH_SHORT).show()
+            })
+            addView(actionButton("Desativar") { stopSelf() })
+        }
+        actionsScroller.addView(actions)
+        header.addView(
+            actionsScroller,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(6) }
+        )
+    }
+
+    private fun showComponentPicker() {
+        val root = editor ?: return
+        if (componentPicker != null) return
+
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0x99080B12.toInt())
+            setOnClickListener { closeComponentPicker() }
+        }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(16))
+            background = roundedBackground(0xFF1A1F2B.toInt(), 0xFF536273.toInt(), dp(20))
+            isClickable = true
+            setOnClickListener { }
+            elevation = dp(16).toFloat()
+        }
+        card.addView(
+            TextView(this).apply {
+                text = "Adicionar componente"
+                textSize = 20f
+                setTextColor(Color.WHITE)
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
+        )
+        card.addView(
+            TextView(this).apply {
+                text = "Escolha um controle para colocar na tela do jogo."
+                textSize = 12f
+                setTextColor(0xFFB7C0CD.toInt())
+                setPadding(0, dp(4), 0, dp(12))
+            }
+        )
+
+        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        COMPONENT_TYPES.chunked(3).forEach { rowTypes ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            rowTypes.forEach { (type, label, symbol) ->
+                val tile = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER
+                    setPadding(dp(4), dp(8), dp(4), dp(8))
+                    background = roundedBackground(0xFF242D3A.toInt(), 0xFF455366.toInt(), dp(12))
+                    isClickable = true
+                    isFocusable = true
+                    setOnClickListener {
+                        closeComponentPicker()
+                        addControl(type)
+                    }
+                    addView(
+                        TextView(this@FloatingBubbleService).apply {
+                            text = symbol
+                            textSize = 24f
+                            gravity = Gravity.CENTER
+                            setTextColor(0xFF77E4C1.toInt())
+                        },
+                        LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            dp(34)
+                        )
+                    )
+                    addView(
+                        TextView(this@FloatingBubbleService).apply {
+                            text = label
+                            textSize = 11f
+                            gravity = Gravity.CENTER
+                            setTextColor(Color.WHITE)
+                        }
+                    )
+                }
+                row.addView(
+                    tile,
+                    LinearLayout.LayoutParams(0, dp(82), 1f).apply {
+                        setMargins(dp(4), dp(4), dp(4), dp(4))
+                    }
+                )
+            }
+            repeat(3 - rowTypes.size) {
+                row.addView(View(this), LinearLayout.LayoutParams(0, dp(82), 1f))
+            }
+            grid.addView(row)
+        }
+        card.addView(grid)
+        card.addView(
+            actionButton("Voltar ao editor") { closeComponentPicker() },
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
+        )
+        scrim.addView(
+            card,
+            FrameLayout.LayoutParams(
+                (resources.displayMetrics.widthPixels - dp(32)).coerceAtMost(dp(380)),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        )
+        root.addView(
+            scrim,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        componentPicker = scrim
+    }
+
+    private fun showResetConfirmation() {
+        val root = editor ?: return
+        if (resetConfirmation != null) return
+
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0x99080B12.toInt())
+            setOnClickListener { closeResetConfirmation() }
+        }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = roundedBackground(0xFF1A1F2B.toInt(), 0xFF536273.toInt(), dp(18))
+            isClickable = true
+            setOnClickListener { }
+        }
+        card.addView(
+            TextView(this).apply {
+                text = "Limpar mapeamento?"
+                textSize = 18f
+                setTextColor(Color.WHITE)
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
+        )
+        card.addView(
+            TextView(this).apply {
+                text = "Todos os controles deste perfil serão removidos."
+                textSize = 13f
+                setTextColor(0xFFB7C0CD.toInt())
+                setPadding(0, dp(8), 0, dp(14))
+            }
+        )
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(
+                actionButton("Cancelar") { closeResetConfirmation() },
+                LinearLayout.LayoutParams(0, dp(44), 1f)
+            )
+            addView(
+                actionButton("Limpar controles") {
+                    writeControls(emptyList())
+                    closeResetConfirmation()
+                    renderControls(root)
+                    Toast.makeText(this@FloatingBubbleService, "Mapeamento limpo.", Toast.LENGTH_SHORT).show()
+                },
+                LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) }
+            )
+        }
+        card.addView(buttons)
+        scrim.addView(
+            card,
+            FrameLayout.LayoutParams(
+                (resources.displayMetrics.widthPixels - dp(40)).coerceAtMost(dp(360)),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        )
+        root.addView(
+            scrim,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        resetConfirmation = scrim
+    }
+
+    private fun closeComponentPicker() {
+        val picker = componentPicker ?: return
+        editor?.removeView(picker)
+        componentPicker = null
+    }
+
+    private fun closeResetConfirmation() {
+        val confirmation = resetConfirmation ?: return
+        editor?.removeView(confirmation)
+        resetConfirmation = null
     }
 
     private fun addControl(type: String) {
@@ -387,7 +591,11 @@ class FloatingBubbleService : Service() {
         )
         writeControls(items + control)
         renderControls(root)
-        beginCapture(control.id)
+        if (type == "JOYSTICK") {
+            Toast.makeText(this, "Joystick adicionado com WASD.", Toast.LENGTH_SHORT).show()
+        } else {
+            beginCapture(control.id)
+        }
     }
 
     private fun renderControls(root: KeyCaptureFrame) {
@@ -461,6 +669,8 @@ class FloatingBubbleService : Service() {
         removeOverlay(editor)
         editor = null
         editorParams = null
+        componentPicker = null
+        resetConfirmation = null
     }
 
     private fun closeMenu() {
@@ -707,16 +917,19 @@ class FloatingBubbleService : Service() {
         const val TAG = "NexoPlay"
         const val NOTIFICATION_ID = 7321
         const val LONG_PRESS_MS = 600L
+        const val ACTION_STOP = "com.mapeador.action.STOP_FLOATING_PANEL"
         const val PREFERENCES = "mapeador"
         const val MAPPING = "mapping"
         const val CONTROL_TAG = "nexoplay-mapping-control"
         val COMPONENT_TYPES = listOf(
-            "TOUCH" to "Toque",
-            "SWIPE" to "Deslizar",
-            "SCROLL" to "Scroll",
-            "MACRO" to "Macro",
-            "JOYSTICK" to "Joystick WASD",
-            "FPS_VIEW" to "Visão FPS"
+            Triple("TOUCH", "Toque", "●"),
+            Triple("SWIPE", "Deslizar", "↗"),
+            Triple("SCROLL", "Scroll do mouse", "↕"),
+            Triple("MACRO", "Macro", "M"),
+            Triple("JOYSTICK", "Joystick WASD", "WASD"),
+            Triple("FPS_VIEW", "Visão FPS", "◎"),
+            Triple("FREE_LOOK", "Olhar livre", "◉"),
+            Triple("MOUSE_PICK", "Mouse Pick", "⊙")
         )
     }
 }

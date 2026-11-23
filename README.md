@@ -7,6 +7,8 @@ Durante o jogo, toque na bolha NexoPlay e escolha **Editar keymap neste jogo**.
 Adicione um tipo de controle, pressione a tecla ou o botão do mouse que deseja
 associar e arraste o indicador para a posição correspondente no HUD. Toque em um
 indicador existente para alterar a tecla ou mantenha-o pressionado para removê-lo.
+Use **Sair** para fechar apenas o editor. Para encerrar a bolha e o serviço,
+selecione **Desativar** no menu flutuante, na barra do editor ou na notificação.
 
 ## Gerar o APK
 

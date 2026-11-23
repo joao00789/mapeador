@@ -112,7 +112,9 @@ private enum class ComponentType(val title: String) {
     SCROLL("Scroll"),
     MACRO("Macro"),
     JOYSTICK("Joystick WASD"),
-    FPS_VIEW("Visão FPS")
+    FPS_VIEW("Visão FPS"),
+    FREE_LOOK("Olhar livre"),
+    MOUSE_PICK("Mouse Pick")
 }
 
 private data class MappedComponent(
