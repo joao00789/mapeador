@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.Gravity
@@ -30,6 +31,7 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
@@ -98,10 +100,11 @@ private class JoystickControlView(
         paint.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
         canvas.drawText(key, centerX, centerY + paint.textSize * 0.35f, paint)
         paint.textSize = resources.displayMetrics.density * 9f
-        canvas.drawText("W", centerX, centerY - radius * 0.54f, paint)
-        canvas.drawText("A", centerX - radius * 0.57f, centerY + paint.textSize * 0.35f, paint)
-        canvas.drawText("S", centerX, centerY + radius * 0.68f, paint)
-        canvas.drawText("D", centerX + radius * 0.57f, centerY + paint.textSize * 0.35f, paint)
+        val arrows = key.equals("SETAS", ignoreCase = true)
+        canvas.drawText(if (arrows) "↑" else "W", centerX, centerY - radius * 0.54f, paint)
+        canvas.drawText(if (arrows) "←" else "A", centerX - radius * 0.57f, centerY + paint.textSize * 0.35f, paint)
+        canvas.drawText(if (arrows) "↓" else "S", centerX, centerY + radius * 0.68f, paint)
+        canvas.drawText(if (arrows) "→" else "D", centerX + radius * 0.57f, centerY + paint.textSize * 0.35f, paint)
     }
 }
 
@@ -152,6 +155,14 @@ class FloatingBubbleService : Service() {
     private var resetConfirmation: View? = null
     private var controlSettings: View? = null
     private var importDialog: View? = null
+    private var hud: TextView? = null
+    private var hudStart = 0L
+    private val hudTicker = object : Runnable {
+        override fun run() {
+            updateHud()
+            handler.postDelayed(this, 1000)
+        }
+    }
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var menuParams: WindowManager.LayoutParams? = null
     private var editorParams: WindowManager.LayoutParams? = null
@@ -197,6 +208,7 @@ class FloatingBubbleService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        hideHud()
         ShizukuInputBridge.stopMapping()
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(preferenceListener)
         removeOverlay(editor)
@@ -312,76 +324,232 @@ class FloatingBubbleService : Service() {
     private fun showMenu() {
         if (menu != null || editor != null) return
         val manager = windowManager ?: return
-        val width = dp(280)
-        val root = LinearLayout(this).apply {
+        val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+        val panelWidth = (resources.displayMetrics.widthPixels * 0.42f).toInt()
+            .coerceIn(dp(260), dp(420))
+
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0x66000000)
+            isClickable = true
+            setOnClickListener { closeMenu() }
+        }
+        val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = roundedBackground(0xF230377A.toInt(), 0xFF8F9BFF.toInt(), dp(20))
+            setPadding(dp(18), dp(14), dp(18), dp(14))
+            background = GradientDrawable(
+                GradientDrawable.Orientation.LEFT_RIGHT,
+                intArrayOf(0xF24A50D8.toInt(), 0xF21B1E5C.toInt(), 0xF0101236.toInt())
+            )
+            isClickable = true
+            setOnClickListener { }
             elevation = dp(12).toFloat()
         }
 
-        val title = LinearLayout(this).apply {
+        val topRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val logo = ImageView(this).apply {
-            setImageResource(R.drawable.ic_nexoplay)
-            contentDescription = "Logo NexoPlay"
-        }
-        title.addView(logo, LinearLayout.LayoutParams(dp(36), dp(36)))
-        title.addView(
-            TextView(this).apply {
-                text = "NexoPlay"
-                setTextColor(Color.WHITE)
-                textSize = 18f
-                setPadding(dp(10), 0, 0, 0)
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-            },
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        )
-        root.addView(title)
-        root.addView(
-            TextView(this).apply {
-                text = "Painel rápido • sobre o jogo"
-                setTextColor(0xFFD8DCFF.toInt())
-                textSize = 12f
-                setPadding(0, dp(6), 0, dp(12))
-            }
-        )
-        root.addView(LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(menuAction("⌖", "Editar") { openEditor() }, LinearLayout.LayoutParams(0, dp(86), 1f))
-            addView(menuAction("▣", "Abrir app") {
+        topRow.addView(
+            circleButton("⌂") {
                 closeMenu()
-                startActivity(
-                    Intent(this@FloatingBubbleService, MainActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                openApp()
+            },
+            LinearLayout.LayoutParams(dp(44), dp(44)).apply { marginEnd = dp(14) }
+        )
+        topRow.addView(
+            circleButton("⚙") {
+                closeMenu()
+                openApp()
+            },
+            LinearLayout.LayoutParams(dp(44), dp(44))
+        )
+        panel.addView(topRow)
+
+        val indicatorsOn = preferences.getBoolean("indicators", true)
+        val items = listOf(
+            PanelItem("⌖", "Editar keymap", true) { openEditor() },
+            PanelItem("◉", if (indicatorsOn) "Ocultar indicadores" else "Mostrar indicadores", true) {
+                preferences.edit().putBoolean("indicators", !indicatorsOn).apply()
+                closeMenu()
+            },
+            PanelItem("▤", if (hud == null) "Monitor de informações" else "Fechar monitor", true) {
+                closeMenu()
+                if (hud == null) showHud() else hideHud()
+            },
+            PanelItem("▣", "Abrir app", true) {
+                closeMenu()
+                openApp()
+            },
+            PanelItem("⊕", "Mira virtual", false) { },
+            PanelItem("⟲", "Macro", false) { },
+            PanelItem("⇣", "Controle de recuo", false) { },
+            PanelItem("✕", "Desativar", true) { stopSelf() }
+        )
+        val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        items.chunked(2).forEach { pair ->
+            val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            pair.forEach { item ->
+                row.addView(
+                    panelButton(item),
+                    LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                        .apply { setMargins(dp(4), dp(10), dp(4), dp(0)) }
                 )
-            }, LinearLayout.LayoutParams(0, dp(86), 1f))
-            addView(menuAction("×", "Desativar") { stopSelf() }, LinearLayout.LayoutParams(0, dp(86), 1f))
-        })
+            }
+            if (pair.size == 1) row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+            grid.addView(row)
+        }
+        val scroller = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            addView(grid)
+        }
+        panel.addView(
+            scroller,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        )
+
+        scrim.addView(
+            panel,
+            FrameLayout.LayoutParams(
+                panelWidth,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                Gravity.START
+            )
+        )
 
         val params = WindowManager.LayoutParams(
-            width,
-            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
             overlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            val bubblePosition = bubbleParams
-            x = (bubblePosition?.x ?: 0).coerceIn(0, resources.displayMetrics.widthPixels - width)
-            y = (bubblePosition?.y ?: dp(100)) + dp(64)
         }
         menuParams = params
         try {
-            manager.addView(root, params)
-            menu = root
+            manager.addView(scrim, params)
+            menu = scrim
         } catch (error: WindowManager.BadTokenException) {
             Log.e(TAG, "Não foi possível abrir o menu flutuante", error)
             Toast.makeText(this, "Não foi possível abrir o menu flutuante.", Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun openApp() {
+        startActivity(
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        )
+    }
+
+    private data class PanelItem(
+        val symbol: String,
+        val label: String,
+        val enabled: Boolean,
+        val onClick: () -> Unit
+    )
+
+    private fun circleButton(symbol: String, onClick: () -> Unit): TextView =
+        TextView(this).apply {
+            text = symbol
+            textSize = 20f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0xFF14163F.toInt())
+            }
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick() }
+        }
+
+    private fun panelButton(item: PanelItem): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+            alpha = if (item.enabled) 1f else 0.45f
+            isClickable = item.enabled
+            isFocusable = item.enabled
+            if (item.enabled) setOnClickListener { item.onClick() }
+            addView(
+                TextView(this@FloatingBubbleService).apply {
+                    text = item.symbol
+                    textSize = 24f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = dp(16).toFloat()
+                        setColor(0xFF0F1130.toInt())
+                        setStroke(dp(2), 0xFF6C74FF.toInt())
+                    }
+                },
+                LinearLayout.LayoutParams(dp(60), dp(60))
+            )
+            addView(
+                TextView(this@FloatingBubbleService).apply {
+                    text = if (item.enabled) item.label else "${item.label}\n(em breve)"
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    setPadding(0, dp(6), 0, 0)
+                }
+            )
+        }
+
+    private fun showHud() {
+        if (hud != null) return
+        val manager = windowManager ?: return
+        val view = TextView(this).apply {
+            textSize = 11f
+            setTextColor(Color.WHITE)
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+            background = roundedBackground(0x99000000.toInt(), 0x33FFFFFF, dp(10))
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayWindowType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = dp(12)
+            y = dp(8)
+        }
+        try {
+            manager.addView(view, params)
+            hud = view
+            hudStart = SystemClock.elapsedRealtime()
+            updateHud()
+            handler.postDelayed(hudTicker, 1000)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Não foi possível exibir o monitor", error)
+        }
+    }
+
+    private fun hideHud() {
+        handler.removeCallbacks(hudTicker)
+        removeOverlay(hud)
+        hud = null
+    }
+
+    private fun updateHud() {
+        val view = hud ?: return
+        val battery = (getSystemService(BATTERY_SERVICE) as android.os.BatteryManager)
+            .getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val hours = (SystemClock.elapsedRealtime() - hudStart) / 3_600_000.0
+        val runtime = Runtime.getRuntime()
+        val usedMb = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
+        view.text = String.format(java.util.Locale.US, "%d%%   %.2fh   %d MB", battery, hours, usedMb)
     }
 
     private fun openEditor() {
@@ -423,75 +591,52 @@ class FloatingBubbleService : Service() {
     }
 
     private fun buildEditorHeader(root: KeyCaptureFrame) {
-        val header = LinearLayout(this).apply {
+        val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = roundedBackground(0xF230377A.toInt(), 0xFF8F9BFF.toInt(), dp(16))
+            background = roundedBackground(0xE66670F0.toInt(), 0x00000000, dp(18))
             elevation = dp(10).toFloat()
         }
-        val titleRow = LinearLayout(this).apply {
+        fun cell(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
+            text = label
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setPadding(dp(8), dp(6), dp(8), dp(6))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick() }
+        }
+        fun row(vararg cells: TextView): LinearLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+            cells.forEach { addView(it, LinearLayout.LayoutParams(0, dp(46), 1f)) }
         }
-        val logo = ImageView(this).apply {
-            setImageResource(R.drawable.ic_nexoplay)
-            contentDescription = "Logo NexoPlay"
-        }
-        titleRow.addView(logo, LinearLayout.LayoutParams(dp(28), dp(28)))
-        titleRow.addView(
-            TextView(this).apply {
-                text = "Editando keymap no jogo"
-                textSize = 15f
-                setTextColor(Color.WHITE)
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                setPadding(dp(8), 0, 0, 0)
-            },
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        )
-        titleRow.addView(actionButton("Sair") { closeEditor() })
-        header.addView(titleRow)
+        fun divider(): View = View(this).apply { setBackgroundColor(0x55FFFFFF) }
 
-        header.addView(
-            TextView(this).apply {
-                text = "Adicione controles, associe as teclas e posicione no HUD."
-                textSize = 11f
-                setTextColor(0xFFB7C0CD.toInt())
-                setPadding(0, dp(6), 0, dp(6))
-            }
+        panel.addView(
+            row(
+                cell("Sair") { closeEditor() },
+                cell("Adicionar\ncomponente") { showComponentPicker() },
+                cell("Salvar") {
+                    writeControls(readControls())
+                    Toast.makeText(this@FloatingBubbleService, "Mapeamento salvo.", Toast.LENGTH_SHORT).show()
+                }
+            )
+        )
+        panel.addView(divider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1))
+        panel.addView(
+            row(
+                cell("Compartilhar") { shareControls() },
+                cell("Importar") { showImportDialog() },
+                cell("Limpar") { showResetConfirmation() }
+            )
         )
         root.addView(
-            header,
+            panel,
             FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.MATCH_PARENT,
+                (resources.displayMetrics.widthPixels - dp(32)).coerceAtMost(dp(460)),
                 FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP
-            ).apply {
-                leftMargin = dp(8)
-                topMargin = dp(28)
-                rightMargin = dp(8)
-            }
-        )
-        val actionsScroller = HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
-        }
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            addView(actionButton("+ Adicionar") { showComponentPicker() })
-            addView(actionButton("Salvar") {
-                writeControls(readControls())
-                Toast.makeText(this@FloatingBubbleService, "Mapeamento salvo.", Toast.LENGTH_SHORT).show()
-            })
-            addView(actionButton("Compartilhar") { shareControls() })
-            addView(actionButton("Importar") { showImportDialog() })
-            addView(actionButton("Limpar") { showResetConfirmation() })
-        }
-        actionsScroller.addView(actions)
-        header.addView(
-            actionsScroller,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { topMargin = dp(6) }
+                Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            ).apply { topMargin = dp(16) }
         )
     }
 
@@ -530,7 +675,7 @@ class FloatingBubbleService : Service() {
         )
 
         val grid = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        COMPONENT_TYPES.chunked(3).forEach { rowTypes ->
+        COMPONENT_TYPES.chunked(4).forEach { rowTypes ->
             val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             rowTypes.forEach { (type, label, symbol) ->
                 val tile = LinearLayout(this).apply {
@@ -572,7 +717,7 @@ class FloatingBubbleService : Service() {
                     }
                 )
             }
-            repeat(3 - rowTypes.size) {
+            repeat(4 - rowTypes.size) {
                 row.addView(View(this), LinearLayout.LayoutParams(0, dp(82), 1f))
             }
             grid.addView(row)
@@ -588,7 +733,7 @@ class FloatingBubbleService : Service() {
         scrim.addView(
             card,
             FrameLayout.LayoutParams(
-                (resources.displayMetrics.widthPixels - dp(32)).coerceAtMost(dp(380)),
+                (resources.displayMetrics.widthPixels - dp(32)).coerceAtMost(dp(560)),
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.CENTER
             )
@@ -790,6 +935,28 @@ class FloatingBubbleService : Service() {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = dp(8) }
         )
+        card.addView(
+            TextView(this).apply {
+                text = "Tipo de controle"
+                textSize = 13f
+                setTextColor(Color.WHITE)
+                setPadding(0, dp(10), 0, dp(4))
+            }
+        )
+        val typeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("WASD" to "WASD", "SETAS" to "Setas").forEach { (value, label) ->
+            typeRow.addView(
+                actionButton(label) {
+                    writeControls(readControls().map {
+                        if (it.id == id) it.copy(key = value) else it
+                    })
+                    editor?.let(::renderControls)
+                    Toast.makeText(this@FloatingBubbleService, "Tipo: $label", Toast.LENGTH_SHORT).show()
+                },
+                LinearLayout.LayoutParams(0, dp(40), 1f).apply { marginEnd = dp(6) }
+            )
+        }
+        card.addView(typeRow)
         val buttons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(
@@ -1050,7 +1217,7 @@ class FloatingBubbleService : Service() {
                 leftMargin = (control.x * screenWidth - controlWidth / 2)
                     .toInt().coerceIn(0, (screenWidth - controlWidth).coerceAtLeast(0))
                 topMargin = (control.y * screenHeight - controlHeight / 2)
-                    .toInt().coerceIn(dp(100), (screenHeight - controlHeight).coerceAtLeast(dp(100)))
+                    .toInt().coerceIn(dp(8), (screenHeight - controlHeight).coerceAtLeast(dp(8)))
             }
             view.setOnTouchListener(ControlTouchListener(control.id))
             root.addView(view, params)
@@ -1246,8 +1413,8 @@ class FloatingBubbleService : Service() {
                             (resources.displayMetrics.widthPixels - view.width).coerceAtLeast(0).toFloat()
                         )
                         view.y = (startY + dy).coerceIn(
-                            dp(96).toFloat(),
-                            (resources.displayMetrics.heightPixels - view.height).coerceAtLeast(dp(96)).toFloat()
+                            dp(8).toFloat(),
+                            (resources.displayMetrics.heightPixels - view.height).coerceAtLeast(dp(8)).toFloat()
                         )
                     }
                     return true
@@ -1408,7 +1575,8 @@ class FloatingBubbleService : Service() {
         val COMPONENT_TYPES = listOf(
             Triple("TOUCH", "Toque", "●"),
             Triple("SWIPE", "Deslizar", "↗"),
-            Triple("MOUSE_PICK", "Mouse Pick", "⊙")
+            Triple("MOUSE_PICK", "Seleção do Mouse", "⊙"),
+            Triple("JOYSTICK", "Joystick", "✥")
         )
     }
 }

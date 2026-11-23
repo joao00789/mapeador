@@ -23,6 +23,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -139,9 +140,9 @@ private data class MappedComponent(
 )
 
 private enum class AppPage(val label: String) {
-    GAMES("Jogos"),
+    GAMES("Iniciar jogo"),
     EDITOR("Keymap"),
-    SETTINGS("Ajustes")
+    SETTINGS("Configurações")
 }
 
 private data class GameApp(
@@ -256,25 +257,7 @@ private fun MapeadorApp() {
 
     Scaffold(
         containerColor = Ink,
-        bottomBar = {
-            NavigationBar(containerColor = Panel) {
-                AppPage.entries.forEach { destination ->
-                    NavigationBarItem(
-                        selected = page == destination,
-                        onClick = { page = destination },
-                        icon = { Text(destination.label.take(1), fontWeight = FontWeight.Bold) },
-                        label = { Text(destination.label) },
-                        colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = Accent,
-                            selectedTextColor = Color.White,
-                            unselectedIconColor = Color.White.copy(alpha = 0.72f),
-                            unselectedTextColor = Color.White.copy(alpha = 0.72f),
-                            indicatorColor = PanelDark
-                        )
-                    )
-                }
-            }
-        }
+        bottomBar = { BottomTabs(page) { page = it } }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -282,7 +265,7 @@ private fun MapeadorApp() {
                 .padding(padding)
                 .padding(horizontal = 18.dp)
         ) {
-            Header(page)
+            if (page == AppPage.EDITOR) Header(page)
             when (page) {
                 AppPage.GAMES -> GamesPage(
                     games = games,
@@ -505,23 +488,73 @@ private fun MapeadorApp() {
 
 @Composable
 private fun Header(page: AppPage) {
-    Column(modifier = Modifier.padding(top = 20.dp, bottom = 16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                painter = painterResource(R.drawable.ic_nexoplay),
-                contentDescription = "Logo NexoPlay",
-                tint = Color.Unspecified,
-                modifier = Modifier.size(28.dp)
-            )
-            Text(
-                "NEXOPLAY",
-                color = Panel,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(start = 8.dp)
-            )
+    Row(
+        modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            painter = painterResource(R.drawable.ic_nexoplay),
+            contentDescription = "Logo NexoPlay",
+            tint = Color.Unspecified,
+            modifier = Modifier.size(26.dp)
+        )
+        Text(
+            "NEXOPLAY",
+            color = Panel,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(start = 8.dp)
+        )
+        Text(
+            page.label,
+            color = TextPrimary,
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(start = 14.dp)
+        )
+    }
+}
+
+@Composable
+private fun BottomTabs(page: AppPage, onSelect: (AppPage) -> Unit) {
+    Row(modifier = Modifier.fillMaxWidth().height(52.dp).background(PanelDark)) {
+        AppPage.entries.forEach { destination ->
+            val selected = destination == page
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
+                    .background(if (selected) Color(0xFF5662FF) else Color(0xFF4549AC))
+                    .clickable { onSelect(destination) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    destination.label,
+                    color = Color.White,
+                    fontSize = 16.sp,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+                )
+            }
         }
-        Text(page.label, color = TextPrimary, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun StatusPill(label: String, connected: Boolean) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (connected) Color(0xFF2E9E6B) else Color(0xFF5662FF))
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "$label: ${if (connected) "Conectado" else "Desconectado"}",
+            color = Color.White,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1
+        )
     }
 }
 
@@ -547,109 +580,84 @@ private fun GamesPage(
         inputManager.registerInputDeviceListener(listener, Handler(Looper.getMainLooper()))
         onDispose { inputManager.unregisterInputDeviceListener(listener) }
     }
-    val listScrollState = rememberScrollState()
     LaunchedEffect(games) {
         if (games.none { it.packageName == selectedPackage }) {
             onSelectPackage(games.firstOrNull()?.packageName.orEmpty())
         }
     }
-    LaunchedEffect(selectedPackage) { listScrollState.scrollTo(0) }
     val selectedGame = games.firstOrNull { it.packageName == selectedPackage }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().padding(top = 10.dp, bottom = 10.dp)) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            ConnectionChip(
-                "Teclado",
-                if (inputDevices.first) "Detectado no Android" else "Não detectado",
-                Modifier.weight(1f)
-            )
-            ConnectionChip(
-                "Mouse",
-                if (inputDevices.second) "Detectado no Android" else "Não detectado",
-                Modifier.weight(1f)
-            )
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Seus jogos", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-                Text("Selecione um jogo para iniciar com o NexoPlay.", color = TextPrimary.copy(alpha = 0.68f), fontSize = 12.sp)
-            }
-            Button(onClick = onAddGame) { Text("＋ Adicionar") }
+            Text("Jogos", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Button(
+                onClick = onAddGame,
+                modifier = Modifier.padding(start = 16.dp)
+            ) { Text("＋ Adicionar jogo") }
+            Box(Modifier.weight(1f))
+            StatusPill("Mouse", inputDevices.second)
+            Box(Modifier.width(8.dp))
+            StatusPill("Teclado", inputDevices.first)
         }
 
-        if (games.isEmpty()) {
-            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                    shape = RoundedCornerShape(22.dp)
-                ) {
-                    Column(
-                        modifier = Modifier.padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Text("Nenhum jogo ainda", color = TextPrimary, fontWeight = FontWeight.Bold)
-                        Text(
-                            "Adicione um jogo instalado para configurar seu mapeamento.",
-                            color = TextPrimary.copy(alpha = 0.68f),
-                            modifier = Modifier.padding(top = 6.dp, bottom = 14.dp)
-                        )
-                        OutlinedButton(onClick = onAddGame) { Text("Escolher jogo") }
-                    }
+        Box(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            contentAlignment = Alignment.Center
+        ) {
+            if (games.isEmpty()) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text("Nenhum jogo ainda", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Toque em Adicionar jogo e escolha um app instalado.",
+                        color = TextPrimary.copy(alpha = 0.68f),
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
                 }
-            }
-        } else {
-            Column(
-                modifier = Modifier.weight(1f).verticalScroll(listScrollState),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                games.chunked(2).forEach { rowGames ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        rowGames.forEach { game ->
-                            val selected = game.packageName == selectedPackage
-                            Card(
-                                modifier = Modifier.weight(1f).clickable { onSelectPackage(game.packageName) },
-                                colors = CardDefaults.cardColors(
-                                    containerColor = if (selected) Panel else Color.White
-                                ),
-                                shape = RoundedCornerShape(20.dp),
-                                border = if (selected) null else androidx.compose.foundation.BorderStroke(
-                                    1.dp,
-                                    Panel.copy(alpha = 0.16f)
-                                )
+            } else {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    games.forEach { game ->
+                        val selected = game.packageName == selectedPackage
+                        Card(
+                            modifier = Modifier.width(150.dp).clickable { onSelectPackage(game.packageName) },
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (selected) Panel else Color.White
+                            ),
+                            shape = RoundedCornerShape(20.dp),
+                            border = if (selected) null else androidx.compose.foundation.BorderStroke(
+                                1.dp,
+                                Panel.copy(alpha = 0.16f)
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
                             ) {
-                                Column(
-                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                    horizontalAlignment = Alignment.CenterHorizontally
+                                GameAppIcon(game, selected)
+                                Text(
+                                    game.label,
+                                    color = if (selected) Color.White else TextPrimary,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(top = 8.dp)
+                                )
+                                TextButton(
+                                    onClick = { onRemoveGame(game) },
+                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
                                 ) {
-                                    GameAppIcon(game, selected)
                                     Text(
-                                        game.label,
-                                        color = if (selected) Color.White else TextPrimary,
-                                        fontWeight = FontWeight.SemiBold,
-                                        maxLines = 1,
-                                        modifier = Modifier.padding(top = 8.dp)
+                                        "Remover",
+                                        color = if (selected) Color.White.copy(alpha = 0.78f) else Panel,
+                                        fontSize = 11.sp
                                     )
-                                    TextButton(
-                                        onClick = { onRemoveGame(game) },
-                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
-                                    ) {
-                                        Text(
-                                            "Remover",
-                                            color = if (selected) Color.White.copy(alpha = 0.78f) else Panel,
-                                            fontSize = 11.sp
-                                        )
-                                    }
                                 }
                             }
-                        }
-                        if (rowGames.size == 1) {
-                            Box(Modifier.weight(1f))
                         }
                     }
                 }
@@ -659,9 +667,9 @@ private fun GamesPage(
         Button(
             onClick = { selectedGame?.let(onStartGame) },
             enabled = selectedGame != null,
-            modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp)
+            modifier = Modifier.align(Alignment.CenterHorizontally).width(260.dp)
         ) {
-            Text(if (selectedGame == null) "Selecione um jogo" else "Iniciar ${selectedGame.label}")
+            Text(if (selectedGame == null) "Selecione um jogo" else "Iniciar jogo")
         }
     }
 }
@@ -1021,20 +1029,38 @@ private fun SettingsPage(
     onOpacityChange: (Float) -> Unit,
     onColorChange: (String) -> Unit
 ) {
+    val context = LocalContext.current
+    var showAssistant by remember { mutableStateOf(false) }
+    val overlayGranted = Settings.canDrawOverlays(context)
+
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
-            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text("Acesso Shizuku", color = Color.White, fontWeight = FontWeight.SemiBold)
+        Text("Configurações", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Panel),
+            shape = RoundedCornerShape(6.dp)
+        ) {
+            Column(Modifier.fillMaxWidth()) {
+                SettingsRow("Modo de Ativação", "Shizuku", onConnectShizuku)
+                SettingsDivider()
                 Text(
-                    "$shizukuState. Essa autorização libera chamadas à API do Shizuku; ela não instala root dentro do app.",
+                    shizukuState,
                     color = Muted,
-                    fontSize = 12.sp
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                 )
-                OutlinedButton(onClick = onConnectShizuku) {
-                    Text("Conectar / verificar Shizuku")
+                SettingsDivider()
+                SettingsRow("Assistente de ativação", "") { showAssistant = true }
+                SettingsDivider()
+                SettingsRow(
+                    "Gerenciamento de permissões",
+                    if (overlayGranted) "Sobreposição ativa" else "Sobreposição pendente"
+                ) {
+                    context.startActivity(
+                        Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
+                    )
                 }
             }
         }
@@ -1072,6 +1098,39 @@ private fun SettingsPage(
             }
         }
     }
+
+    if (showAssistant) {
+        AlertDialog(
+            onDismissRequest = { showAssistant = false },
+            title = { Text("Assistente de ativação") },
+            text = {
+                Text(
+                    "1. Instale e abra o app Shizuku.\n" +
+                        "2. Inicie o Shizuku por Depuração sem fio (Android 11+) ou por ADB.\n" +
+                        "3. Volte aqui e toque em Modo de Ativação para autorizar o NexoPlay.\n" +
+                        "4. Permita a sobreposição em Gerenciamento de permissões.\n" +
+                        "5. Em Iniciar jogo, adicione o jogo e toque em Iniciar jogo. A bolha aparece; toque nela para abrir o painel."
+                )
+            },
+            confirmButton = { TextButton(onClick = { showAssistant = false }) { Text("Entendi") } }
+        )
+    }
+}
+
+@Composable
+private fun SettingsRow(title: String, value: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(title, color = Color.White, fontSize = 16.sp, modifier = Modifier.weight(1f))
+        Text(if (value.isEmpty()) "›" else "$value ›", color = Color.White, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun SettingsDivider() {
+    Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.2f)))
 }
 
 @Composable

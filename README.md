@@ -1,8 +1,8 @@
 # NexoPlay
 
 Primeira versão em desenvolvimento do NexoPlay, um mapeador Android com launcher
-de jogos, editor de controles sobreposto e botão flutuante. A tela Jogos abre por
-padrão; selecione um app instalado e toque em **Iniciar** para abrir o jogo com a
+de jogos, editor de controles sobreposto e botão flutuante. A tela Iniciar jogo abre por
+padrão (abas: Iniciar jogo, Keymap, Configurações); selecione um app instalado e toque em **Iniciar** para abrir o jogo com a
 bolha do NexoPlay.
 
 Durante o jogo, toque na bolha NexoPlay e escolha **Editar keymap neste jogo**.
@@ -30,3 +30,15 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 `nexoplay-debug-apk` na seção **Artifacts** da execução.
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
+
+## Novidades da 0.2.0
+
+- Tela de jogos refeita para paisagem (cartões em fileira rolável, botão **Iniciar jogo**,
+  indicadores de mouse e teclado). Corrige a lista vazia depois de adicionar um jogo.
+- Configurações no estilo GG Mouse Pro: Modo de Ativação (Shizuku), Assistente de ativação
+  e Gerenciamento de permissões.
+- Bolha flutuante abre um painel lateral com atalhos (editar keymap, indicadores, monitor
+  de bateria/tempo/memória, abrir app, desativar). Mira virtual, macro e controle de recuo
+  aparecem como "em breve".
+- Editor com barra compacta (Sair, Adicionar componente, Salvar, Compartilhar, Importar,
+  Limpar), seletor em 4 colunas e joystick com tipo WASD/Setas.
