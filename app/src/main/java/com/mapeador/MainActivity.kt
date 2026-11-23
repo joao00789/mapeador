@@ -1,6 +1,7 @@
 package com.mapeador
 
 import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -173,6 +174,7 @@ private fun MapeadorApp() {
     var importText by remember { mutableStateOf<String?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     var shizukuState by remember { mutableStateOf(shizukuStatus()) }
+    var keyMappingServiceEnabled by remember { mutableStateOf(isKeyMappingServiceEnabled(context)) }
     var typingEnabled by remember { mutableStateOf(preferences.getBoolean("typing", true)) }
     var indicatorsEnabled by remember { mutableStateOf(preferences.getBoolean("indicators", true)) }
     var indicatorOpacity by remember {
@@ -200,6 +202,7 @@ private fun MapeadorApp() {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 shizukuState = shizukuStatus()
+                keyMappingServiceEnabled = isKeyMappingServiceEnabled(context)
                 components = loadComponents(preferences)
                 val pendingPackage = preferences.getString("pending_game", null)
                 if (pendingPackage != null) {
@@ -275,8 +278,12 @@ private fun MapeadorApp() {
             when (page) {
                 AppPage.HOME -> HomePage(
                     shizukuState = shizukuState,
+                    keyMappingServiceEnabled = keyMappingServiceEnabled,
                     batteryLevel = batteryLevel,
                     wifiPing = wifiPing,
+                    onEnableKeyMapping = {
+                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                    },
                     onConnectShizuku = {
                         when {
                             !Shizuku.pingBinder() -> shizukuState = "Shizuku não está iniciado"
@@ -519,8 +526,10 @@ private fun Header(page: AppPage) {
 @Composable
 private fun HomePage(
     shizukuState: String,
+    keyMappingServiceEnabled: Boolean,
     batteryLevel: Int?,
     wifiPing: String,
+    onEnableKeyMapping: () -> Unit,
     onConnectShizuku: () -> Unit,
     onOpenEditor: () -> Unit
 ) {
@@ -560,6 +569,28 @@ private fun HomePage(
                 Text(shizukuState, color = Muted, modifier = Modifier.padding(top = 5.dp, bottom = 12.dp))
                 OutlinedButton(onClick = onConnectShizuku) {
                     Text(if (shizukuState == "Conectado e autorizado") "Verificar conexão" else "Conectar")
+                }
+            }
+            Card(
+                colors = CardDefaults.cardColors(containerColor = Panel),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Mapeamento de teclado", color = Color.White, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (keyMappingServiceEnabled) {
+                            "Serviço de acessibilidade ativo. Desative “Digitação do teclado” em Ajustes para mapear teclas."
+                        } else {
+                            "Para enviar toques ao jogo, o Android exige ativar o serviço de acessibilidade do NexoPlay."
+                        },
+                        color = Muted,
+                        fontSize = 12.sp,
+                        modifier = Modifier.padding(top = 5.dp, bottom = 12.dp)
+                    )
+                    OutlinedButton(onClick = onEnableKeyMapping) {
+                        Text(if (keyMappingServiceEnabled) "Abrir configurações de acessibilidade" else "Ativar mapeamento")
+                    }
                 }
             }
         }
@@ -1091,6 +1122,15 @@ private fun shizukuStatus(): String = when {
     Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED ->
         "Conectado e autorizado"
     else -> "Aguardando autorização"
+}
+
+private fun isKeyMappingServiceEnabled(context: Context): Boolean {
+    val enabledServices = Settings.Secure.getString(
+        context.contentResolver,
+        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+    ) ?: return false
+    val target = ComponentName(context, KeyMappingAccessibilityService::class.java)
+    return enabledServices.split(':').any { ComponentName.unflattenFromString(it) == target }
 }
 
 private fun queryLaunchableGames(context: Context): List<GameApp> {

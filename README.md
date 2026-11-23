@@ -10,6 +10,12 @@ indicador existente para alterar a tecla ou mantenha-o pressionado para removê-
 Use **Sair** para fechar apenas o editor. Para encerrar a bolha e o serviço,
 selecione **Desativar** no menu flutuante, na barra do editor ou na notificação.
 
+Para mapear teclas durante o jogo, habilite o serviço **NexoPlay - Mapeamento de
+teclado** nas configurações de Acessibilidade do Android e desligue **Digitação do
+teclado** em Ajustes. O usuário escolhe os jogos permitidos na aba Jogos.
+Na versão atual, os componentes Toque e Mouse Pick enviam toques, e Deslizar envia
+um movimento horizontal. Os demais tipos ainda são apenas controles visuais.
+
 ## Gerar o APK
 
 Cada envio para a branch `main` inicia o workflow **Android APK**. Também é possível

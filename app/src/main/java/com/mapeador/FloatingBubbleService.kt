@@ -610,17 +610,22 @@ class FloatingBubbleService : Service() {
             val label = componentLabel(control.type)
             val view = TextView(this).apply {
                 text = "${control.key}\n$label"
-                textSize = 12f
+                textSize = 10f
                 gravity = Gravity.CENTER
+                maxLines = 2
                 setTextColor(Color.BLACK)
-                setPadding(dp(8), dp(6), dp(8), dp(6))
-                background = roundedBackground(0xCC77E4C1.toInt(), 0xFF77E4C1.toInt(), dp(12))
+                setPadding(dp(4), dp(4), dp(4), dp(4))
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(0xCC77E4C1.toInt())
+                    setStroke(dp(2), 0xFF77E4C1.toInt())
+                }
                 elevation = dp(6).toFloat()
                 tag = CONTROL_TAG
                 contentDescription = "$label, tecla ${control.key}. Toque para alterar. Segure para remover."
             }
-            val controlWidth = dp(76)
-            val controlHeight = dp(54)
+            val controlWidth = dp(68)
+            val controlHeight = dp(68)
             val params = FrameLayout.LayoutParams(controlWidth, controlHeight).apply {
                 leftMargin = (control.x * screenWidth - controlWidth / 2)
                     .toInt().coerceIn(0, (screenWidth - controlWidth).coerceAtLeast(0))
@@ -759,8 +764,8 @@ class FloatingBubbleService : Service() {
     private inner class ControlTouchListener(private val id: String) : View.OnTouchListener {
         private var downX = 0f
         private var downY = 0f
-        private var startX = 0
-        private var startY = 0
+        private var startX = 0f
+        private var startY = 0f
         private var moved = false
         private var longPressed = false
         private val removeRunnable = Runnable {
@@ -775,8 +780,8 @@ class FloatingBubbleService : Service() {
                 MotionEvent.ACTION_DOWN -> {
                     downX = event.rawX
                     downY = event.rawY
-                    startX = params.leftMargin
-                    startY = params.topMargin
+                    startX = view.x
+                    startY = view.y
                     moved = false
                     longPressed = false
                     handler.postDelayed(removeRunnable, LONG_PRESS_MS)
@@ -786,18 +791,19 @@ class FloatingBubbleService : Service() {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = (event.rawX - downX).toInt()
                     val dy = (event.rawY - downY).toInt()
-                    if (abs(dx) > dp(6) || abs(dy) > dp(6)) {
+                    if (abs(dx) > dp(3) || abs(dy) > dp(3)) {
                         moved = true
                         handler.removeCallbacks(removeRunnable)
                     }
                     if (moved) {
-                        params.leftMargin = (startX + dx).coerceIn(0, resources.displayMetrics.widthPixels - view.width)
-                        params.topMargin = (startY + dy).coerceIn(dp(96), resources.displayMetrics.heightPixels - view.height)
-                        try {
-                            windowManager?.updateViewLayout(view, params)
-                        } catch (error: IllegalArgumentException) {
-                            Log.w(TAG, "O indicador não está mais anexado ao editor", error)
-                        }
+                        view.x = (startX + dx).coerceIn(
+                            0f,
+                            (resources.displayMetrics.widthPixels - view.width).coerceAtLeast(0).toFloat()
+                        )
+                        view.y = (startY + dy).coerceIn(
+                            dp(96).toFloat(),
+                            (resources.displayMetrics.heightPixels - view.height).coerceAtLeast(dp(96)).toFloat()
+                        )
                     }
                     return true
                 }
@@ -809,8 +815,8 @@ class FloatingBubbleService : Service() {
                     } else if (moved) {
                         updateControlPosition(
                             id,
-                            params.leftMargin + view.width / 2f,
-                            params.topMargin + view.height / 2f
+                            view.x + view.width / 2f,
+                            view.y + view.height / 2f
                         )
                     }
                     return true
