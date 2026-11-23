@@ -13,7 +13,6 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.util.Log
-import android.view.KeyEvent as AndroidKeyEvent
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.widget.Toast
@@ -73,10 +72,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.nativeKeyEvent
 import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalDensity
@@ -154,6 +154,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun MapeadorApp() {
     val context = LocalContext.current
@@ -190,7 +191,7 @@ private fun MapeadorApp() {
             delay(4_000)
         }
     }
-    val batteryLevel by rememberBatteryLevel(context)
+    val batteryLevel = rememberBatteryLevel(context)
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -373,9 +374,7 @@ private fun MapeadorApp() {
                         .focusable()
                         .onPreviewKeyEvent { event ->
                             if (event.type == KeyEventType.KeyDown) {
-                                val keyName = AndroidKeyEvent
-                                    .keyCodeToString(event.nativeKeyEvent.keyCode)
-                                    .removePrefix("KEYCODE_")
+                                val keyName = event.key.toString().uppercase()
                                 components = components.map {
                                     if (it.id == targetId) it.copy(key = keyName) else it
                                 }
