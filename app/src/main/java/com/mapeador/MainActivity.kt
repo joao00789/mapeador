@@ -147,7 +147,7 @@ private enum class AppPage(val label: String) {
 private data class GameApp(
     val packageName: String,
     val label: String,
-    val launcherActivity: String
+    val launcherActivity: String = ""
 )
 
 class MainActivity : ComponentActivity() {
@@ -186,6 +186,7 @@ private fun MapeadorApp() {
 
     var page by remember { mutableStateOf(AppPage.GAMES) }
     var games by remember { mutableStateOf(loadGames(context)) }
+    var selectedGamePackage by remember { mutableStateOf(games.firstOrNull()?.packageName) }
     var showGamePicker by remember { mutableStateOf(false) }
     var components by remember { mutableStateOf(loadComponents(preferences)) }
     var captureTarget by remember { mutableStateOf<String?>(null) }
@@ -285,6 +286,8 @@ private fun MapeadorApp() {
             when (page) {
                 AppPage.GAMES -> GamesPage(
                     games = games,
+                    selectedPackage = selectedGamePackage,
+                    onSelectPackage = { selectedGamePackage = it },
                     onAddGame = { showGamePicker = true },
                     onRemoveGame = { game ->
                         games = games.filterNot { it.packageName == game.packageName }
@@ -490,10 +493,10 @@ private fun MapeadorApp() {
             games = queryLaunchableGames(context),
             onDismiss = { showGamePicker = false },
             onSelect = { game ->
-                if (games.none { it.packageName == game.packageName }) {
-                    games = games + game
-                    saveGames(preferences, games)
-                }
+                games = listOf(game) + games.filterNot { it.packageName == game.packageName }
+                selectedGamePackage = game.packageName
+                saveGames(preferences, games)
+                Toast.makeText(context, "${game.label} adicionado à biblioteca.", Toast.LENGTH_SHORT).show()
                 showGamePicker = false
             }
         )
@@ -525,6 +528,8 @@ private fun Header(page: AppPage) {
 @Composable
 private fun GamesPage(
     games: List<GameApp>,
+    selectedPackage: String?,
+    onSelectPackage: (String) -> Unit,
     onAddGame: () -> Unit,
     onRemoveGame: (GameApp) -> Unit,
     onStartGame: (GameApp) -> Unit
@@ -542,12 +547,13 @@ private fun GamesPage(
         inputManager.registerInputDeviceListener(listener, Handler(Looper.getMainLooper()))
         onDispose { inputManager.unregisterInputDeviceListener(listener) }
     }
-    var selectedPackage by remember { mutableStateOf(games.firstOrNull()?.packageName) }
+    val listScrollState = rememberScrollState()
     LaunchedEffect(games) {
         if (games.none { it.packageName == selectedPackage }) {
-            selectedPackage = games.firstOrNull()?.packageName
+            onSelectPackage(games.firstOrNull()?.packageName.orEmpty())
         }
     }
+    LaunchedEffect(selectedPackage) { listScrollState.scrollTo(0) }
     val selectedGame = games.firstOrNull { it.packageName == selectedPackage }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -599,7 +605,7 @@ private fun GamesPage(
             }
         } else {
             Column(
-                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                modifier = Modifier.weight(1f).verticalScroll(listScrollState),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 games.chunked(2).forEach { rowGames ->
@@ -607,7 +613,7 @@ private fun GamesPage(
                         rowGames.forEach { game ->
                             val selected = game.packageName == selectedPackage
                             Card(
-                                modifier = Modifier.weight(1f).clickable { selectedPackage = game.packageName },
+                                modifier = Modifier.weight(1f).clickable { onSelectPackage(game.packageName) },
                                 colors = CardDefaults.cardColors(
                                     containerColor = if (selected) Panel else Color.White
                                 ),
@@ -1145,20 +1151,42 @@ private fun queryLaunchableGames(context: Context): List<GameApp> {
 }
 
 private fun loadGames(context: Context): List<GameApp> {
-    val savedPackages = try {
+    val savedGames = try {
         val array = JSONArray(context.getSharedPreferences("mapeador", Context.MODE_PRIVATE)
             .getString("games", "[]"))
-        List(array.length()) { index -> array.getString(index) }.toSet()
+        List(array.length()) { index ->
+            when (val item = array.get(index)) {
+                is String -> GameApp(item, item)
+                is JSONObject -> GameApp(
+                    packageName = item.getString("packageName"),
+                    label = item.optString("label", item.getString("packageName")),
+                    launcherActivity = item.optString("launcherActivity")
+                )
+                else -> throw JSONException("Jogo salvo no formato incorreto")
+            }
+        }
     } catch (error: JSONException) {
         Log.e("NexoPlay", "Lista de jogos salva está inválida", error)
-        emptySet()
+        emptyList()
     }
-    return queryLaunchableGames(context).filter { it.packageName in savedPackages }
+    val discoveredGames = queryLaunchableGames(context).associateBy { it.packageName }
+    return savedGames.distinctBy { it.packageName }.map { saved ->
+        discoveredGames[saved.packageName] ?: saved
+    }
 }
 
 private fun saveGames(preferences: android.content.SharedPreferences, games: List<GameApp>) {
-    val packages = JSONArray().apply { games.forEach { put(it.packageName) } }
-    preferences.edit().putString("games", packages.toString()).apply()
+    val savedGames = JSONArray().apply {
+        games.forEach { game ->
+            put(
+                JSONObject()
+                    .put("packageName", game.packageName)
+                    .put("label", game.label)
+                    .put("launcherActivity", game.launcherActivity)
+            )
+        }
+    }
+    preferences.edit().putString("games", savedGames.toString()).apply()
 }
 
 private fun launchGameWithBubble(
@@ -1166,7 +1194,9 @@ private fun launchGameWithBubble(
     packageName: String,
     launcherActivity: String? = null
 ) {
-    val launchIntent = launcherActivity?.let { activity ->
+    val resolvedActivity = launcherActivity?.takeIf { it.isNotBlank() }
+        ?: queryLaunchableGames(context).firstOrNull { it.packageName == packageName }?.launcherActivity
+    val launchIntent = resolvedActivity?.let { activity ->
         Intent(Intent.ACTION_MAIN)
             .addCategory(Intent.CATEGORY_LAUNCHER)
             .setComponent(ComponentName(packageName, activity))
