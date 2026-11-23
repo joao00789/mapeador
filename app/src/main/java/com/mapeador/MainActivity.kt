@@ -198,6 +198,7 @@ private fun MapeadorApp() {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 shizukuState = shizukuStatus()
+                components = loadComponents(preferences)
                 val pendingPackage = preferences.getString("pending_game", null)
                 if (pendingPackage != null) {
                     if (Settings.canDrawOverlays(context)) {
