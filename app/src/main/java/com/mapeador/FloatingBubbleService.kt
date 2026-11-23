@@ -108,6 +108,32 @@ private class JoystickControlView(
     }
 }
 
+private fun keyLabel(key: String): String = when (key.uppercase()) {
+    "SHIFT_LEFT" -> "L-Shift"
+    "SHIFT_RIGHT" -> "R-Shift"
+    "CTRL_LEFT" -> "L-Ctrl"
+    "CTRL_RIGHT" -> "R-Ctrl"
+    "ALT_LEFT" -> "L-Alt"
+    "ALT_RIGHT" -> "R-Alt"
+    "SPACE" -> "Espaço"
+    "CAPS_LOCK" -> "Caps"
+    "GRAVE" -> "~"
+    "ESCAPE" -> "Esc"
+    "DEL" -> "Backspace"
+    "FORWARD_DEL" -> "Del"
+    "MOUSE_LEFT" -> "Mouse-E"
+    "MOUSE_RIGHT" -> "Mouse-D"
+    "MOUSE_MIDDLE" -> "Mouse-M"
+    "DPAD_UP" -> "↑"
+    "DPAD_DOWN" -> "↓"
+    "DPAD_LEFT" -> "←"
+    "DPAD_RIGHT" -> "→"
+    "PAGE_UP" -> "PgUp"
+    "PAGE_DOWN" -> "PgDn"
+    "TECLA?" -> "?"
+    else -> if (key.uppercase().startsWith("NUMPAD_")) "Num" + key.substring(7) else key
+}
+
 private class KeyCaptureFrame(context: android.content.Context) : FrameLayout(context) {
     var onKeyCaptured: ((String) -> Unit)? = null
     var captureEnabled = false
@@ -170,10 +196,10 @@ class FloatingBubbleService : Service() {
     private var activeGamePackage: String? = null
     private val handler = Handler(Looper.getMainLooper())
     private val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
-        if (key in setOf(MAPPING, "indicators", "opacity", "indicator_color")) {
+        if (key in setOf(MAPPING, "indicators", "opacity", "indicator_color2")) {
             handler.post {
                 keymapOverlay?.let(::renderControls)
-                if (key == MAPPING) {
+                if (key == MAPPING && editor == null) {
                     val saved = getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(MAPPING, "[]") ?: "[]"
                     activeGamePackage?.let { ShizukuInputBridge.startMapping(this, it, saved) }
                 }
@@ -259,7 +285,7 @@ class FloatingBubbleService : Service() {
             Notification.Builder(this)
         }
             .setSmallIcon(R.drawable.ic_stat_nexoplay)
-            .setContentTitle("NexoPlay ativo")
+            .setContentTitle("B13 MAUSE PRO ativo")
             .setContentText("Toque na bolha para editar os controles sobre o jogo.")
             .setContentIntent(openAppIntent)
             .setOngoing(true)
@@ -298,10 +324,10 @@ class FloatingBubbleService : Service() {
         bubbleParams = params
 
         val icon = ImageView(this).apply {
-            setImageResource(R.drawable.ic_nexoplay)
-            contentDescription = "NexoPlay. Toque para abrir o editor sobre o jogo."
+            setImageResource(R.drawable.b13_logo)
+            contentDescription = "B13 MAUSE PRO. Toque para abrir o painel."
             setPadding(size / 6, size / 6, size / 6, size / 6)
-            background = roundedBackground(0xFF303A82.toInt(), 0xFF9BE5F3.toInt(), dp(28))
+            background = roundedBackground(0xFF4A1218.toInt(), 0xFFFF6B6B.toInt(), dp(28))
             clipToOutline = true
             elevation = dp(8).toFloat()
         }
@@ -338,7 +364,7 @@ class FloatingBubbleService : Service() {
             setPadding(dp(18), dp(14), dp(18), dp(14))
             background = GradientDrawable(
                 GradientDrawable.Orientation.LEFT_RIGHT,
-                intArrayOf(0xF24A50D8.toInt(), 0xF21B1E5C.toInt(), 0xF0101236.toInt())
+                intArrayOf(0xF2B3202A.toInt(), 0xF2400D12.toInt(), 0xF01A0508.toInt())
             )
             isClickable = true
             setOnClickListener { }
@@ -462,7 +488,7 @@ class FloatingBubbleService : Service() {
             setTextColor(Color.WHITE)
             background = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0xFF14163F.toInt())
+                setColor(0xFF2A0A0E.toInt())
             }
             isClickable = true
             isFocusable = true
@@ -486,8 +512,8 @@ class FloatingBubbleService : Service() {
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.RECTANGLE
                         cornerRadius = dp(16).toFloat()
-                        setColor(0xFF0F1130.toInt())
-                        setStroke(dp(2), 0xFF6C74FF.toInt())
+                        setColor(0xFF200608.toInt())
+                        setStroke(dp(2), 0xFFE5484D.toInt())
                     }
                 },
                 LinearLayout.LayoutParams(dp(60), dp(60))
@@ -556,6 +582,7 @@ class FloatingBubbleService : Service() {
         if (editor != null) return
         closeMenu()
         hideKeymapOverlay()
+        ShizukuInputBridge.stopMapping()
         val manager = windowManager ?: return
         val root = KeyCaptureFrame(this).apply {
             isFocusableInTouchMode = true
@@ -585,7 +612,7 @@ class FloatingBubbleService : Service() {
             closeEditor()
         } catch (error: SecurityException) {
             Log.e(TAG, "Permissão de sobreposição não está disponível", error)
-            Toast.makeText(this, "Ative a permissão de sobreposição do NexoPlay.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Ative a permissão de sobreposição do B13 MAUSE PRO.", Toast.LENGTH_LONG).show()
             closeEditor()
         }
     }
@@ -593,7 +620,7 @@ class FloatingBubbleService : Service() {
     private fun buildEditorHeader(root: KeyCaptureFrame) {
         val panel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = roundedBackground(0xE66670F0.toInt(), 0x00000000, dp(18))
+            background = roundedBackground(0xE6B3202A.toInt(), 0x00000000, dp(18))
             elevation = dp(10).toFloat()
         }
         fun cell(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
@@ -652,7 +679,7 @@ class FloatingBubbleService : Service() {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(16))
-            background = roundedBackground(0xFF303A82.toInt(), 0xFF9AA5FF.toInt(), dp(20))
+            background = roundedBackground(0xFF4A1218.toInt(), 0xFFE5484D.toInt(), dp(20))
             isClickable = true
             setOnClickListener { }
             elevation = dp(16).toFloat()
@@ -682,7 +709,7 @@ class FloatingBubbleService : Service() {
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER
                     setPadding(dp(4), dp(8), dp(4), dp(8))
-                    background = roundedBackground(0xFF242D3A.toInt(), 0xFF455366.toInt(), dp(12))
+                    background = roundedBackground(0xFF2B0C10.toInt(), 0xFF6B2A30.toInt(), dp(12))
                     isClickable = true
                     isFocusable = true
                     setOnClickListener {
@@ -694,7 +721,7 @@ class FloatingBubbleService : Service() {
                             text = symbol
                             textSize = 24f
                             gravity = Gravity.CENTER
-                            setTextColor(0xFF9BE5F3.toInt())
+                            setTextColor(0xFFFF6B6B.toInt())
                         },
                         LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -794,7 +821,7 @@ class FloatingBubbleService : Service() {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(16), dp(18), dp(16))
-            background = roundedBackground(0xFF303A82.toInt(), 0xFF9AA5FF.toInt(), dp(18))
+            background = roundedBackground(0xFF4A1218.toInt(), 0xFFE5484D.toInt(), dp(18))
             isClickable = true
             setOnClickListener { }
         }
@@ -874,7 +901,7 @@ class FloatingBubbleService : Service() {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(16), dp(18), dp(16))
-            background = roundedBackground(0xFF303A82.toInt(), 0xFF9AA5FF.toInt(), dp(20))
+            background = roundedBackground(0xFF4A1218.toInt(), 0xFFE5484D.toInt(), dp(20))
             isClickable = true
             setOnClickListener { }
             elevation = dp(16).toFloat()
@@ -891,7 +918,7 @@ class FloatingBubbleService : Service() {
             TextView(this).apply {
                 text = "Controle direcional • ${control.key}"
                 textSize = 12f
-                setTextColor(0xFFD8DCFF.toInt())
+                setTextColor(0xFFFFE3E4.toInt())
                 setPadding(0, dp(4), 0, dp(12))
             }
         )
@@ -1010,7 +1037,7 @@ class FloatingBubbleService : Service() {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(16))
-            background = roundedBackground(0xFF303A82.toInt(), 0xFF9AA5FF.toInt(), dp(20))
+            background = roundedBackground(0xFF4A1218.toInt(), 0xFFE5484D.toInt(), dp(20))
             isClickable = true
             setOnClickListener { }
         }
@@ -1024,21 +1051,21 @@ class FloatingBubbleService : Service() {
         )
         card.addView(
             TextView(this).apply {
-                text = "Cole abaixo o JSON exportado pelo NexoPlay."
+                text = "Cole abaixo o JSON exportado pelo B13 MAUSE PRO."
                 textSize = 12f
-                setTextColor(0xFFD8DCFF.toInt())
+                setTextColor(0xFFFFE3E4.toInt())
                 setPadding(0, dp(4), 0, dp(10))
             }
         )
         val input = EditText(this).apply {
             hint = "JSON do mapeamento"
-            setHintTextColor(0xFFB4B9E0.toInt())
+            setHintTextColor(0xFFE0B4B8.toInt())
             setTextColor(Color.WHITE)
             minLines = 4
             maxLines = 8
             gravity = Gravity.TOP or Gravity.START
             setPadding(dp(10), dp(8), dp(10), dp(8))
-            background = roundedBackground(0xFF202449.toInt(), 0xFF737BE4.toInt(), dp(10))
+            background = roundedBackground(0xFF2B0C10.toInt(), 0xFFE5484D.toInt(), dp(10))
         }
         card.addView(input)
         val buttons = LinearLayout(this).apply {
@@ -1105,7 +1132,7 @@ class FloatingBubbleService : Service() {
         val encoded = getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(MAPPING, "[]") ?: "[]"
         val sendIntent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
-            putExtra(Intent.EXTRA_SUBJECT, "Mapeamento NexoPlay")
+            putExtra(Intent.EXTRA_SUBJECT, "Mapeamento B13 MAUSE PRO")
             putExtra(Intent.EXTRA_TEXT, encoded)
         }
         try {
@@ -1176,11 +1203,14 @@ class FloatingBubbleService : Service() {
         val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
         if (!preferences.getBoolean("indicators", true)) return
         val opacity = preferences.getFloat("opacity", 0.8f).coerceIn(0.15f, 1f)
-        val indicatorColor = when (preferences.getString("indicator_color", "Verde")) {
+        val indicatorColor = when (preferences.getString("indicator_color2", "Branco")) {
             "Azul" -> 0xFF70B7FF.toInt()
             "Roxo" -> 0xFFBE91FF.toInt()
-            else -> 0xFF66E3A4.toInt()
+            "Verde" -> 0xFF66E3A4.toInt()
+            "Vermelho" -> 0xFFFF5A5F.toInt()
+            else -> 0xFFFFFFFF.toInt()
         }
+        val inEditor = root === editor
         val screenWidth = resources.displayMetrics.widthPixels
         val screenHeight = resources.displayMetrics.heightPixels
         readControls().forEach { control ->
@@ -1189,17 +1219,30 @@ class FloatingBubbleService : Service() {
             val view = if (isJoystick) {
                 JoystickControlView(this, control.key, indicatorColor, opacity)
             } else {
+                val waiting = control.id == captureTarget
+                val shown = if (waiting) "…" else keyLabel(control.key)
+                val suffix = if (waiting) "" else when (control.type) {
+                    "SWIPE" -> "\n↗"
+                    "MOUSE_PICK" -> "\n⊙"
+                    else -> ""
+                }
                 TextView(this).apply {
-                    text = "${control.key}\n$label"
-                    textSize = 10f
+                    text = shown + suffix
+                    textSize = if (shown.length > 6) 10f else 13f
                     gravity = Gravity.CENTER
                     maxLines = 2
                     setTextColor(Color.WHITE)
-                    setPadding(dp(4), dp(4), dp(4), dp(4))
+                    setShadowLayer(3f, 0f, 0f, 0xFF000000.toInt())
+                    setPadding(dp(2), dp(2), dp(2), dp(2))
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.OVAL
-                        setColor(withOpacity(indicatorColor, opacity * 0.72f))
-                        setStroke(dp(2), withOpacity(indicatorColor, opacity))
+                        if (inEditor) {
+                            setColor(0xCC2A0A0E.toInt())
+                            setStroke(dp(2), if (waiting) 0xFFFFFFFF.toInt() else 0xFFE5484D.toInt())
+                        } else {
+                            setColor(withOpacity(indicatorColor, 0.16f))
+                            setStroke(dp(2), withOpacity(indicatorColor, opacity))
+                        }
                     }
                 }
             }
@@ -1210,7 +1253,7 @@ class FloatingBubbleService : Service() {
             } else {
                 "$label, tecla ${control.key}. Toque para alterar. Segure para remover."
             }
-            val controlSize = if (isJoystick) (dp(112) * control.radius).toInt().coerceAtLeast(dp(70)) else dp(68)
+            val controlSize = if (isJoystick) (dp(112) * control.radius).toInt().coerceAtLeast(dp(70)) else dp(60)
             val controlWidth = controlSize
             val controlHeight = controlSize
             val params = FrameLayout.LayoutParams(controlWidth, controlHeight).apply {
@@ -1269,6 +1312,8 @@ class FloatingBubbleService : Service() {
         controlSettings = null
         importDialog = null
         showKeymapOverlay()
+        val saved = getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(MAPPING, "[]") ?: "[]"
+        activeGamePackage?.let { ShizukuInputBridge.startMapping(this, it, saved) }
     }
 
     private fun closeMenu() {
@@ -1496,7 +1541,7 @@ class FloatingBubbleService : Service() {
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = roundedBackground(0xFF4A55B0.toInt(), 0xFF8790F0.toInt(), dp(12))
+            background = roundedBackground(0xFF8E1B24.toInt(), 0xFFFF6B6B.toInt(), dp(12))
             isClickable = true
             isFocusable = true
             setOnClickListener { onClick() }
@@ -1517,8 +1562,8 @@ class FloatingBubbleService : Service() {
                     setTextColor(Color.WHITE)
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.OVAL
-                        setColor(0xFF5961C8.toInt())
-                        setStroke(dp(1), 0xFF9BE5F3.toInt())
+                        setColor(0xFFB3202A.toInt())
+                        setStroke(dp(1), 0xFFFF6B6B.toInt())
                     }
                 },
                 LinearLayout.LayoutParams(dp(48), dp(48))

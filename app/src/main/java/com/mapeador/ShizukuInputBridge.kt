@@ -31,7 +31,7 @@ object ShizukuInputBridge {
             return
         }
         if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            callback(false, "NexoPlay ainda não foi autorizado no Shizuku")
+            callback(false, "B13 MAUSE PRO ainda não foi autorizado no Shizuku")
             return
         }
         remote?.let {

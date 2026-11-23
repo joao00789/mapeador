@@ -1,11 +1,11 @@
-# NexoPlay
+# B13 MAUSE PRO
 
-Primeira versão em desenvolvimento do NexoPlay, um mapeador Android com launcher
+Primeira versão em desenvolvimento do B13 MAUSE PRO, um mapeador Android com launcher
 de jogos, editor de controles sobreposto e botão flutuante. A tela Iniciar jogo abre por
 padrão (abas: Iniciar jogo, Keymap, Configurações); selecione um app instalado e toque em **Iniciar** para abrir o jogo com a
-bolha do NexoPlay.
+bolha do B13 MAUSE PRO.
 
-Durante o jogo, toque na bolha NexoPlay e escolha **Editar keymap neste jogo**.
+Durante o jogo, toque na bolha B13 MAUSE PRO e escolha **Editar keymap neste jogo**.
 No editor, use a barra sobre o jogo para adicionar componentes, salvar, importar,
 compartilhar ou limpar o mapeamento. Arraste os indicadores redondos até as posições
 correspondentes no HUD. Toque em um indicador para configurar a tecla; no joystick,
@@ -13,7 +13,7 @@ toque para ajustar o tamanho ou alterar o atalho. Mantenha um indicador pression
 para removê-lo. Use **Sair** para fechar apenas o editor. Para encerrar a bolha e o
 serviço, selecione **Desativar botão flutuante** no menu ou na notificação.
 
-Para mapear teclas, inicie o Shizuku, autorize o NexoPlay em **Ajustes → Acesso
+Para mapear teclas, inicie o Shizuku, autorize o B13 MAUSE PRO em **Ajustes → Acesso
 Shizuku** e conecte o teclado e o mouse USB. O serviço remoto do Shizuku lê os
 eventos de entrada e envia toques ao jogo; não é necessário ativar um serviço de
 Acessibilidade. Se o Shizuku estiver rodando como ADB shell, o acesso aos dispositivos
@@ -42,3 +42,10 @@ O APK desta versão é de depuração e não está assinado para distribuição 
   aparecem como "em breve".
 - Editor com barra compacta (Sair, Adicionar componente, Salvar, Compartilhar, Importar,
   Limpar), seletor em 4 colunas e joystick com tipo WASD/Setas.
+
+## Novidades da 0.3.0
+
+- App renomeado para **B13 MAUSE PRO**, com a logo B13 e tema vermelho escuro.
+- A aba Keymap saiu do app: o keymap agora é configurado só pela bolha flutuante.
+- As teclas aparecem sobre o jogo como círculos com nomes curtos (L-Shift, Espaço, Mouse-D).
+- O motor de teclas fica pausado enquanto o editor está aberto, para não disparar toques sem querer.

@@ -104,12 +104,12 @@ import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import kotlin.math.roundToInt
 
-private val Ink = Color(0xFFE9E9F8)
-private val Panel = Color(0xFF5961C8)
-private val Muted = Color(0xFFE0E2FF)
-private val Accent = Color(0xFF9BE5F3)
-private val TextPrimary = Color(0xFF222654)
-private val PanelDark = Color(0xFF202449)
+private val Ink = Color(0xFF1A0709)
+private val Panel = Color(0xFF9B1C27)
+private val Muted = Color(0xFFF3CDD0)
+private val Accent = Color(0xFFFF6B6B)
+private val TextPrimary = Color(0xFFFFE9EA)
+private val PanelDark = Color(0xFF3A0B10)
 
 private enum class ComponentType(val title: String) {
     TOUCH("Toque"),
@@ -141,7 +141,6 @@ private data class MappedComponent(
 
 private enum class AppPage(val label: String) {
     GAMES("Iniciar jogo"),
-    EDITOR("Keymap"),
     SETTINGS("Configurações")
 }
 
@@ -157,11 +156,11 @@ class MainActivity : ComponentActivity() {
         requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         setContent {
             MaterialTheme(
-                colorScheme = androidx.compose.material3.lightColorScheme(
+                colorScheme = androidx.compose.material3.darkColorScheme(
                     primary = Panel,
-                    secondary = Color(0xFF737BE4),
+                    secondary = Color(0xFFE5484D),
                     background = Ink,
-                    surface = Color.White,
+                    surface = Color(0xFF2B0C10),
                     onPrimary = Color.White,
                     onBackground = TextPrimary,
                     onSurface = TextPrimary
@@ -200,7 +199,7 @@ private fun MapeadorApp() {
         mutableFloatStateOf(preferences.getFloat("opacity", 0.8f))
     }
     var indicatorColor by remember {
-        mutableStateOf(preferences.getString("indicator_color", "Verde") ?: "Verde")
+        mutableStateOf(preferences.getString("indicator_color2", "Branco") ?: "Branco")
     }
 
     DisposableEffect(lifecycleOwner) {
@@ -242,9 +241,6 @@ private fun MapeadorApp() {
         onDispose { Shizuku.removeRequestPermissionResultListener(permissionListener) }
     }
 
-    LaunchedEffect(components) {
-        preferences.edit().putString("mapping", encodeComponents(components)).apply()
-    }
     LaunchedEffect(indicatorsEnabled) {
         preferences.edit().putBoolean("indicators", indicatorsEnabled).apply()
     }
@@ -252,7 +248,7 @@ private fun MapeadorApp() {
         preferences.edit().putFloat("opacity", indicatorOpacity).apply()
     }
     LaunchedEffect(indicatorColor) {
-        preferences.edit().putString("indicator_color", indicatorColor).apply()
+        preferences.edit().putString("indicator_color2", indicatorColor).apply()
     }
 
     Scaffold(
@@ -265,7 +261,6 @@ private fun MapeadorApp() {
                 .padding(padding)
                 .padding(horizontal = 18.dp)
         ) {
-            if (page == AppPage.EDITOR) Header(page)
             when (page) {
                 AppPage.GAMES -> GamesPage(
                     games = games,
@@ -281,7 +276,7 @@ private fun MapeadorApp() {
                             Toast.makeText(context, "Inicie o Shizuku antes de iniciar o jogo.", Toast.LENGTH_LONG).show()
                         } else if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
                             Shizuku.requestPermission(1001)
-                            Toast.makeText(context, "Autorize o NexoPlay no Shizuku e toque em Iniciar novamente.", Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, "Autorize o B13 MAUSE PRO no Shizuku e toque em Iniciar novamente.", Toast.LENGTH_LONG).show()
                         } else if (Settings.canDrawOverlays(context)) {
                             launchGameWithBubble(context, game.packageName, game.launcherActivity)
                         } else {
@@ -298,39 +293,6 @@ private fun MapeadorApp() {
                                 Toast.LENGTH_LONG
                             ).show()
                         }
-                    }
-                )
-                AppPage.EDITOR -> EditorPage(
-                    components = components,
-                    indicatorsEnabled = indicatorsEnabled,
-                    indicatorOpacity = indicatorOpacity,
-                    indicatorColor = indicatorColor,
-                    onAdd = { type ->
-                        components = components + MappedComponent(
-                            id = java.util.UUID.randomUUID().toString(),
-                            type = type,
-                            key = if (type == ComponentType.JOYSTICK) "WASD" else "TECLA?",
-                            x = 0.5f,
-                            y = 0.5f
-                        )
-                    },
-                    onMove = { id, deltaX, deltaY ->
-                        components = components.map {
-                            if (it.id == id) it.copy(
-                                x = (it.x + deltaX).coerceIn(0.03f, 0.97f),
-                                y = (it.y + deltaY).coerceIn(0.05f, 0.95f)
-                            )
-                            else it
-                        }
-                    },
-                    onCapture = { captureTarget = it },
-                    onConfigure = { fpsConfigTarget = it },
-                    onRemove = { id -> components = components.filterNot { it.id == id } },
-                    onImport = { importText = "" },
-                    onShare = { shareMapping(context, components) },
-                    onSave = {
-                        preferences.edit().putString("mapping", encodeComponents(components)).apply()
-                        Toast.makeText(context, "Mapeamento salvo", Toast.LENGTH_SHORT).show()
                     }
                 )
                 AppPage.SETTINGS -> SettingsPage(
@@ -487,35 +449,6 @@ private fun MapeadorApp() {
 }
 
 @Composable
-private fun Header(page: AppPage) {
-    Row(
-        modifier = Modifier.padding(top = 12.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(
-            painter = painterResource(R.drawable.ic_nexoplay),
-            contentDescription = "Logo NexoPlay",
-            tint = Color.Unspecified,
-            modifier = Modifier.size(26.dp)
-        )
-        Text(
-            "NEXOPLAY",
-            color = Panel,
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = 8.dp)
-        )
-        Text(
-            page.label,
-            color = TextPrimary,
-            fontSize = 20.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(start = 14.dp)
-        )
-    }
-}
-
-@Composable
 private fun BottomTabs(page: AppPage, onSelect: (AppPage) -> Unit) {
     Row(modifier = Modifier.fillMaxWidth().height(52.dp).background(PanelDark)) {
         AppPage.entries.forEach { destination ->
@@ -524,7 +457,7 @@ private fun BottomTabs(page: AppPage, onSelect: (AppPage) -> Unit) {
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .background(if (selected) Color(0xFF5662FF) else Color(0xFF4549AC))
+                    .background(if (selected) Color(0xFFD7263D) else Color(0xFF3A0B10))
                     .clickable { onSelect(destination) },
                 contentAlignment = Alignment.Center
             ) {
@@ -544,7 +477,7 @@ private fun StatusPill(label: String, connected: Boolean) {
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(50))
-            .background(if (connected) Color(0xFF2E9E6B) else Color(0xFF5662FF))
+            .background(if (connected) Color(0xFF2E9E6B) else Color(0xFF6B1A21))
             .padding(horizontal = 14.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -592,10 +525,22 @@ private fun GamesPage(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("Jogos", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+            Icon(
+                painter = painterResource(R.drawable.b13_logo),
+                contentDescription = "Logo B13",
+                tint = Color.Unspecified,
+                modifier = Modifier.size(40.dp)
+            )
+            Text(
+                "B13 MAUSE PRO",
+                color = TextPrimary,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Black,
+                modifier = Modifier.padding(start = 8.dp)
+            )
             Button(
                 onClick = onAddGame,
-                modifier = Modifier.padding(start = 16.dp)
+                modifier = Modifier.padding(start = 14.dp)
             ) { Text("＋ Adicionar jogo") }
             Box(Modifier.weight(1f))
             StatusPill("Mouse", inputDevices.second)
@@ -627,12 +572,12 @@ private fun GamesPage(
                         Card(
                             modifier = Modifier.width(150.dp).clickable { onSelectPackage(game.packageName) },
                             colors = CardDefaults.cardColors(
-                                containerColor = if (selected) Panel else Color.White
+                                containerColor = if (selected) Panel else Color(0xFF2B0C10)
                             ),
                             shape = RoundedCornerShape(20.dp),
                             border = if (selected) null else androidx.compose.foundation.BorderStroke(
                                 1.dp,
-                                Panel.copy(alpha = 0.16f)
+                                Panel.copy(alpha = 0.6f)
                             )
                         ) {
                             Column(
@@ -653,7 +598,7 @@ private fun GamesPage(
                                 ) {
                                     Text(
                                         "Remover",
-                                        color = if (selected) Color.White.copy(alpha = 0.78f) else Panel,
+                                        color = if (selected) Color.White.copy(alpha = 0.78f) else Accent,
                                         fontSize = 11.sp
                                     )
                                 }
@@ -1075,7 +1020,7 @@ private fun SettingsPage(
                 Text("Aparência dos indicadores", color = Color.White, fontWeight = FontWeight.SemiBold)
                 Text("Cor", color = Muted, modifier = Modifier.padding(top = 12.dp, bottom = 8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("Verde", "Azul", "Roxo").forEach { colorName ->
+                    listOf("Branco", "Vermelho", "Verde", "Azul", "Roxo").forEach { colorName ->
                         FilterChip(
                             selected = indicatorColor == colorName,
                             onClick = { onColorChange(colorName) },
@@ -1093,7 +1038,7 @@ private fun SettingsPage(
                         .background(previewColor(indicatorColor).copy(alpha = indicatorOpacity))
                         .padding(horizontal = 16.dp, vertical = 10.dp)
                 ) {
-                    Text("W  •  Atirar", color = TextPrimary, fontWeight = FontWeight.Bold)
+                    Text("W  •  Atirar", color = Color(0xFF1A0709), fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -1107,7 +1052,7 @@ private fun SettingsPage(
                 Text(
                     "1. Instale e abra o app Shizuku.\n" +
                         "2. Inicie o Shizuku por Depuração sem fio (Android 11+) ou por ADB.\n" +
-                        "3. Volte aqui e toque em Modo de Ativação para autorizar o NexoPlay.\n" +
+                        "3. Volte aqui e toque em Modo de Ativação para autorizar o B13 MAUSE PRO.\n" +
                         "4. Permita a sobreposição em Gerenciamento de permissões.\n" +
                         "5. Em Iniciar jogo, adicione o jogo e toque em Iniciar jogo. A bolha aparece; toque nela para abrir o painel."
                 )
@@ -1358,5 +1303,7 @@ private fun shareMapping(context: Context, components: List<MappedComponent>) {
 private fun previewColor(name: String): Color = when (name) {
     "Azul" -> Color(0xFF77B9FF)
     "Roxo" -> Color(0xFFC19AFF)
-    else -> Accent
+    "Verde" -> Color(0xFF66E3A4)
+    "Vermelho" -> Color(0xFFFF5A5F)
+    else -> Color.White
 }
