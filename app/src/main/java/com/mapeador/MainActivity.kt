@@ -144,7 +144,11 @@ private enum class AppPage(val label: String) {
     SETTINGS("Ajustes")
 }
 
-private data class GameApp(val packageName: String, val label: String)
+private data class GameApp(
+    val packageName: String,
+    val label: String,
+    val launcherActivity: String
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -293,7 +297,7 @@ private fun MapeadorApp() {
                             Shizuku.requestPermission(1001)
                             Toast.makeText(context, "Autorize o NexoPlay no Shizuku e toque em Iniciar novamente.", Toast.LENGTH_LONG).show()
                         } else if (Settings.canDrawOverlays(context)) {
-                            launchGameWithBubble(context, game.packageName)
+                            launchGameWithBubble(context, game.packageName, game.launcherActivity)
                         } else {
                             preferences.edit().putString("pending_game", game.packageName).apply()
                             context.startActivity(
@@ -716,6 +720,8 @@ private fun GamePickerDialog(
     onDismiss: () -> Unit,
     onSelect: (GameApp) -> Unit
 ) {
+    val context = LocalContext.current
+    var availableGames by remember { mutableStateOf(games) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Card(
@@ -729,18 +735,25 @@ private fun GamePickerDialog(
                             Text("Adicionar jogo", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                             Text("Escolha um app instalado para adicionar à biblioteca.", color = TextPrimary.copy(alpha = 0.65f), fontSize = 12.sp)
                         }
+                        TextButton(onClick = { availableGames = queryLaunchableGames(context) }) {
+                            Text("Atualizar")
+                        }
                         TextButton(onClick = onDismiss) { Text("Fechar") }
                     }
-                    if (games.isEmpty()) {
+                    if (availableGames.isEmpty()) {
                         Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                            Text("Não encontrei apps com tela de início neste dispositivo.", color = TextPrimary)
+                            Text(
+                                "Nenhum app inicializável encontrado. Toque em Atualizar ou confira se o jogo está instalado neste perfil do Android.",
+                                color = TextPrimary,
+                                modifier = Modifier.padding(horizontal = 24.dp)
+                            )
                         }
                     } else {
                         LazyColumn(
                             modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 10.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            items(games, key = { it.packageName }) { game ->
+                            items(availableGames, key = { it.packageName }) { game ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
                                         .clickable { onSelect(game) }.padding(horizontal = 8.dp, vertical = 6.dp),
@@ -1108,18 +1121,26 @@ private fun shizukuStatus(): String {
 
 private fun queryLaunchableGames(context: Context): List<GameApp> {
     val packageManager = context.packageManager
-    val applications = if (Build.VERSION.SDK_INT >= 33) {
-        packageManager.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0))
+    val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+    val activities = if (Build.VERSION.SDK_INT >= 33) {
+        packageManager.queryIntentActivities(
+            launcherIntent,
+            PackageManager.ResolveInfoFlags.of(0)
+        )
     } else {
         @Suppress("DEPRECATION")
-        packageManager.getInstalledApplications(0)
+        packageManager.queryIntentActivities(launcherIntent, 0)
     }
 
-    return applications.mapNotNull { appInfo ->
-        val packageName = appInfo.packageName
+    return activities.mapNotNull { resolveInfo ->
+        val activity = resolveInfo.activityInfo ?: return@mapNotNull null
+        val packageName = activity.packageName
         if (packageName == context.packageName) return@mapNotNull null
-        if (packageManager.getLaunchIntentForPackage(packageName) == null) return@mapNotNull null
-        GameApp(packageName, packageManager.getApplicationLabel(appInfo).toString())
+        GameApp(
+            packageName = packageName,
+            label = resolveInfo.loadLabel(packageManager).toString(),
+            launcherActivity = activity.name
+        )
     }.distinctBy { it.packageName }.sortedBy { it.label.lowercase() }
 }
 
@@ -1140,8 +1161,16 @@ private fun saveGames(preferences: android.content.SharedPreferences, games: Lis
     preferences.edit().putString("games", packages.toString()).apply()
 }
 
-private fun launchGameWithBubble(context: Context, packageName: String) {
-    val launchIntent = context.packageManager.getLaunchIntentForPackage(packageName)
+private fun launchGameWithBubble(
+    context: Context,
+    packageName: String,
+    launcherActivity: String? = null
+) {
+    val launchIntent = launcherActivity?.let { activity ->
+        Intent(Intent.ACTION_MAIN)
+            .addCategory(Intent.CATEGORY_LAUNCHER)
+            .setComponent(ComponentName(packageName, activity))
+    } ?: context.packageManager.getLaunchIntentForPackage(packageName)
     if (launchIntent == null) {
         Toast.makeText(context, "Não foi possível abrir esse jogo.", Toast.LENGTH_LONG).show()
         return
