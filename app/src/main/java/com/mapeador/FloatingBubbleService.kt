@@ -6,7 +6,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.ActivityNotFoundException
 import android.graphics.Color
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -21,10 +24,14 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
+import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.SeekBar
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
@@ -38,14 +45,59 @@ private data class OverlayControl(
     val type: String,
     val key: String,
     val x: Float,
-    val y: Float
+    val y: Float,
+    val radius: Float = 0.85f,
+    val stopOnOpposite: Boolean = true,
+    val mousePosition: String = "Centro",
+    val cursorX: Float = 0.5f,
+    val cursorY: Float = 0.5f,
+    val preventViewFreeze: Boolean = true,
+    val controllerAcceleration: Float = 0.5f,
+    val sensitivityX: Float = 1f,
+    val sensitivityY: Float = 1f
 )
+
+private class JoystickControlView(context: android.content.Context, private val key: String) : View(context) {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val centerX = width / 2f
+        val centerY = height / 2f
+        val radius = minOf(centerX, centerY) * 0.88f
+
+        paint.color = 0xCC303A9B.toInt()
+        paint.style = Paint.Style.FILL
+        canvas.drawCircle(centerX, centerY, radius, paint)
+
+        paint.color = 0xFFB8C2FF.toInt()
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = resources.displayMetrics.density * 2f
+        canvas.drawCircle(centerX, centerY, radius, paint)
+        canvas.drawCircle(centerX, centerY, radius * 0.48f, paint)
+        canvas.drawLine(centerX - radius * 0.7f, centerY, centerX + radius * 0.7f, centerY, paint)
+        canvas.drawLine(centerX, centerY - radius * 0.7f, centerX, centerY + radius * 0.7f, paint)
+
+        paint.style = Paint.Style.FILL
+        paint.color = Color.WHITE
+        paint.textAlign = Paint.Align.CENTER
+        paint.textSize = resources.displayMetrics.density * 11f
+        paint.typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.BOLD)
+        canvas.drawText(key, centerX, centerY + paint.textSize * 0.35f, paint)
+        paint.textSize = resources.displayMetrics.density * 9f
+        canvas.drawText("W", centerX, centerY - radius * 0.54f, paint)
+        canvas.drawText("A", centerX - radius * 0.57f, centerY + paint.textSize * 0.35f, paint)
+        canvas.drawText("S", centerX, centerY + radius * 0.68f, paint)
+        canvas.drawText("D", centerX + radius * 0.57f, centerY + paint.textSize * 0.35f, paint)
+    }
+}
 
 private class KeyCaptureFrame(context: android.content.Context) : FrameLayout(context) {
     var onKeyCaptured: ((String) -> Unit)? = null
+    var captureEnabled = false
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.action == KeyEvent.ACTION_DOWN) {
+        if (captureEnabled && event.action == KeyEvent.ACTION_DOWN) {
             onKeyCaptured?.invoke(KeyEvent.keyCodeToString(event.keyCode).removePrefix("KEYCODE_"))
             return true
         }
@@ -53,7 +105,7 @@ private class KeyCaptureFrame(context: android.content.Context) : FrameLayout(co
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
-        if (event.isFromSource(InputDevice.SOURCE_MOUSE) &&
+        if (captureEnabled && event.isFromSource(InputDevice.SOURCE_MOUSE) &&
             (event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS ||
                 event.actionMasked == MotionEvent.ACTION_DOWN)
         ) {
@@ -80,10 +132,13 @@ private class KeyCaptureFrame(context: android.content.Context) : FrameLayout(co
 class FloatingBubbleService : Service() {
     private var windowManager: WindowManager? = null
     private var bubble: ImageView? = null
+    private var keymapOverlay: FrameLayout? = null
     private var menu: View? = null
     private var editor: KeyCaptureFrame? = null
     private var componentPicker: View? = null
     private var resetConfirmation: View? = null
+    private var controlSettings: View? = null
+    private var importDialog: View? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var menuParams: WindowManager.LayoutParams? = null
     private var editorParams: WindowManager.LayoutParams? = null
@@ -111,11 +166,15 @@ class FloatingBubbleService : Service() {
         removeOverlay(editor)
         removeOverlay(menu)
         removeOverlay(bubble)
+        removeOverlay(keymapOverlay)
         editor = null
         componentPicker = null
         resetConfirmation = null
+        controlSettings = null
+        importDialog = null
         menu = null
         bubble = null
+        keymapOverlay = null
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE)
         else {
             @Suppress("DEPRECATION")
@@ -193,7 +252,7 @@ class FloatingBubbleService : Service() {
             setImageResource(R.drawable.ic_nexoplay)
             contentDescription = "NexoPlay. Toque para abrir o editor sobre o jogo."
             setPadding(size / 6, size / 6, size / 6, size / 6)
-            background = roundedBackground(0xFF1A1F2B.toInt(), 0xFF77E4C1.toInt(), dp(28))
+            background = roundedBackground(0xFF303A82.toInt(), 0xFF9BE5F3.toInt(), dp(28))
             clipToOutline = true
             elevation = dp(8).toFloat()
         }
@@ -202,6 +261,7 @@ class FloatingBubbleService : Service() {
         try {
             manager.addView(icon, params)
             bubble = icon
+            showKeymapOverlay()
         } catch (error: SecurityException) {
             Log.e(TAG, "Permissão para exibir a bolha foi recusada", error)
             Toast.makeText(this, "Não foi possível exibir o botão flutuante.", Toast.LENGTH_LONG).show()
@@ -219,7 +279,7 @@ class FloatingBubbleService : Service() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(14))
-            background = roundedBackground(0xF21A1F2B.toInt(), 0xFF394657.toInt(), dp(18))
+            background = roundedBackground(0xF230377A.toInt(), 0xFF8F9BFF.toInt(), dp(20))
             elevation = dp(12).toFloat()
         }
 
@@ -245,20 +305,23 @@ class FloatingBubbleService : Service() {
         root.addView(title)
         root.addView(
             TextView(this).apply {
-                text = "Editor sobre o jogo"
-                setTextColor(0xFFB7C0CD.toInt())
+                text = "Painel rápido • sobre o jogo"
+                setTextColor(0xFFD8DCFF.toInt())
                 textSize = 12f
-                setPadding(0, dp(6), 0, dp(10))
+                setPadding(0, dp(6), 0, dp(12))
             }
         )
-        root.addView(actionButton("Editar keymap neste jogo") { openEditor() })
-        root.addView(actionButton("Desativar botão flutuante") { stopSelf() })
-        root.addView(actionButton("Abrir NexoPlay") {
-            closeMenu()
-            startActivity(
-                Intent(this, MainActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            )
+        root.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(menuAction("⌖", "Editar") { openEditor() }, LinearLayout.LayoutParams(0, dp(86), 1f))
+            addView(menuAction("▣", "Abrir app") {
+                closeMenu()
+                startActivity(
+                    Intent(this@FloatingBubbleService, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                )
+            }, LinearLayout.LayoutParams(0, dp(86), 1f))
+            addView(menuAction("×", "Desativar") { stopSelf() }, LinearLayout.LayoutParams(0, dp(86), 1f))
         })
 
         val params = WindowManager.LayoutParams(
@@ -287,6 +350,7 @@ class FloatingBubbleService : Service() {
     private fun openEditor() {
         if (editor != null) return
         closeMenu()
+        hideKeymapOverlay()
         val manager = windowManager ?: return
         val root = KeyCaptureFrame(this).apply {
             isFocusableInTouchMode = true
@@ -325,7 +389,7 @@ class FloatingBubbleService : Service() {
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = roundedBackground(0xF21A1F2B.toInt(), 0xFF394657.toInt(), dp(16))
+            background = roundedBackground(0xF230377A.toInt(), 0xFF8F9BFF.toInt(), dp(16))
             elevation = dp(10).toFloat()
         }
         val titleRow = LinearLayout(this).apply {
@@ -376,12 +440,13 @@ class FloatingBubbleService : Service() {
         val actions = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             addView(actionButton("+ Adicionar") { showComponentPicker() })
-            addView(actionButton("Limpar") { showResetConfirmation() })
             addView(actionButton("Salvar") {
                 writeControls(readControls())
                 Toast.makeText(this@FloatingBubbleService, "Mapeamento salvo.", Toast.LENGTH_SHORT).show()
             })
-            addView(actionButton("Desativar") { stopSelf() })
+            addView(actionButton("Compartilhar") { shareControls() })
+            addView(actionButton("Importar") { showImportDialog() })
+            addView(actionButton("Limpar") { showResetConfirmation() })
         }
         actionsScroller.addView(actions)
         header.addView(
@@ -399,12 +464,13 @@ class FloatingBubbleService : Service() {
 
         val scrim = FrameLayout(this).apply {
             setBackgroundColor(0x99080B12.toInt())
+            elevation = dp(30).toFloat()
             setOnClickListener { closeComponentPicker() }
         }
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(14), dp(16), dp(16))
-            background = roundedBackground(0xFF1A1F2B.toInt(), 0xFF536273.toInt(), dp(20))
+            background = roundedBackground(0xFF303A82.toInt(), 0xFF9AA5FF.toInt(), dp(20))
             isClickable = true
             setOnClickListener { }
             elevation = dp(16).toFloat()
@@ -446,7 +512,7 @@ class FloatingBubbleService : Service() {
                             text = symbol
                             textSize = 24f
                             gravity = Gravity.CENTER
-                            setTextColor(0xFF77E4C1.toInt())
+                            setTextColor(0xFF9BE5F3.toInt())
                         },
                         LinearLayout.LayoutParams(
                             LinearLayout.LayoutParams.MATCH_PARENT,
@@ -497,7 +563,42 @@ class FloatingBubbleService : Service() {
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
         )
+        scrim.bringToFront()
+        scrim.invalidate()
         componentPicker = scrim
+    }
+
+    /** Shows saved controls during gameplay without consuming touch or mouse input. */
+    private fun showKeymapOverlay() {
+        if (editor != null || keymapOverlay != null) return
+        val manager = windowManager ?: return
+        val root = FrameLayout(this).apply { setBackgroundColor(Color.TRANSPARENT) }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            overlayWindowType(),
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            // Android 12+ allows touches through a non-touchable overlay below this opacity.
+            alpha = 0.75f
+        }
+        try {
+            manager.addView(root, params)
+            keymapOverlay = root
+            renderControls(root)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Não foi possível exibir os indicadores do keymap", error)
+            keymapOverlay = null
+        }
+    }
+
+    private fun hideKeymapOverlay() {
+        removeOverlay(keymapOverlay)
+        keymapOverlay = null
     }
 
     private fun showResetConfirmation() {
@@ -511,7 +612,7 @@ class FloatingBubbleService : Service() {
         val card = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(16), dp(18), dp(16))
-            background = roundedBackground(0xFF1A1F2B.toInt(), 0xFF536273.toInt(), dp(18))
+            background = roundedBackground(0xFF303A82.toInt(), 0xFF9AA5FF.toInt(), dp(18))
             isClickable = true
             setOnClickListener { }
         }
@@ -578,6 +679,270 @@ class FloatingBubbleService : Service() {
         resetConfirmation = null
     }
 
+    private fun showControlSettings(id: String) {
+        val root = editor ?: return
+        if (controlSettings != null) return
+        val control = readControls().firstOrNull { it.id == id } ?: return
+        if (control.type != "JOYSTICK") return
+
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0x99080B12.toInt())
+            setOnClickListener { closeControlSettings() }
+        }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = roundedBackground(0xFF303A82.toInt(), 0xFF9AA5FF.toInt(), dp(20))
+            isClickable = true
+            setOnClickListener { }
+            elevation = dp(16).toFloat()
+        }
+        card.addView(
+            TextView(this).apply {
+                text = "Configurar joystick"
+                textSize = 19f
+                setTextColor(Color.WHITE)
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
+        )
+        card.addView(
+            TextView(this).apply {
+                text = "Controle direcional • ${control.key}"
+                textSize = 12f
+                setTextColor(0xFFD8DCFF.toInt())
+                setPadding(0, dp(4), 0, dp(12))
+            }
+        )
+        val radiusLabel = TextView(this).apply {
+            text = "Tamanho do joystick: ${(control.radius * 100).toInt()}%"
+            textSize = 13f
+            setTextColor(Color.WHITE)
+        }
+        card.addView(radiusLabel)
+        card.addView(
+            SeekBar(this).apply {
+                max = 100
+                progress = (control.radius * 100).toInt().coerceIn(35, 100)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                        val radius = (progress.coerceIn(35, 100) / 100f)
+                        radiusLabel.text = "Tamanho do joystick: ${(radius * 100).toInt()}%"
+                        writeControls(readControls().map {
+                            if (it.id == id) it.copy(radius = radius) else it
+                        })
+                    }
+
+                    override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+                })
+            }
+        )
+        card.addView(
+            Switch(this).apply {
+                text = "Bloquear direções opostas"
+                setTextColor(Color.WHITE)
+                isChecked = control.stopOnOpposite
+                setOnCheckedChangeListener { _, checked ->
+                    writeControls(readControls().map {
+                        if (it.id == id) it.copy(stopOnOpposite = checked) else it
+                    })
+                }
+            },
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8) }
+        )
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(
+                actionButton("Alterar tecla") {
+                    closeControlSettings()
+                    beginCapture(id)
+                },
+                LinearLayout.LayoutParams(0, dp(44), 1f)
+            )
+            addView(
+                actionButton("Concluir") { closeControlSettings() },
+                LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) }
+            )
+        }
+        card.addView(buttons, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(12) })
+        scrim.addView(
+            card,
+            FrameLayout.LayoutParams(
+                (resources.displayMetrics.widthPixels - dp(36)).coerceAtMost(dp(380)),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        )
+        root.addView(
+            scrim,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        controlSettings = scrim
+    }
+
+    private fun closeControlSettings() {
+        val settings = controlSettings ?: return
+        editor?.removeView(settings)
+        controlSettings = null
+        editor?.let(::renderControls)
+    }
+
+    private fun showImportDialog() {
+        val root = editor ?: return
+        if (importDialog != null) return
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0x99080B12.toInt())
+            setOnClickListener { closeImportDialog() }
+        }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(16))
+            background = roundedBackground(0xFF303A82.toInt(), 0xFF9AA5FF.toInt(), dp(20))
+            isClickable = true
+            setOnClickListener { }
+        }
+        card.addView(
+            TextView(this).apply {
+                text = "Importar mapeamento"
+                textSize = 19f
+                setTextColor(Color.WHITE)
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+            }
+        )
+        card.addView(
+            TextView(this).apply {
+                text = "Cole abaixo o JSON exportado pelo NexoPlay."
+                textSize = 12f
+                setTextColor(0xFFD8DCFF.toInt())
+                setPadding(0, dp(4), 0, dp(10))
+            }
+        )
+        val input = EditText(this).apply {
+            hint = "JSON do mapeamento"
+            setHintTextColor(0xFFB4B9E0.toInt())
+            setTextColor(Color.WHITE)
+            minLines = 4
+            maxLines = 8
+            gravity = Gravity.TOP or Gravity.START
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = roundedBackground(0xFF202449.toInt(), 0xFF737BE4.toInt(), dp(10))
+        }
+        card.addView(input)
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(
+                actionButton("Cancelar") { closeImportDialog() },
+                LinearLayout.LayoutParams(0, dp(44), 1f)
+            )
+            addView(
+                actionButton("Importar") {
+                    try {
+                        val controls = decodeOverlayControls(input.text.toString())
+                        writeControls(controls)
+                        closeImportDialog()
+                        renderControls(root)
+                        Toast.makeText(this@FloatingBubbleService, "Mapeamento importado.", Toast.LENGTH_SHORT).show()
+                    } catch (error: JSONException) {
+                        Toast.makeText(this@FloatingBubbleService, "JSON inválido: ${error.message}", Toast.LENGTH_LONG).show()
+                    } catch (error: IllegalArgumentException) {
+                        Toast.makeText(this@FloatingBubbleService, "Mapeamento inválido: ${error.message}", Toast.LENGTH_LONG).show()
+                    }
+                },
+                LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) }
+            )
+        }
+        card.addView(buttons, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT,
+            LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(12) })
+        scrim.addView(
+            card,
+            FrameLayout.LayoutParams(
+                (resources.displayMetrics.widthPixels - dp(36)).coerceAtMost(dp(380)),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        )
+        root.addView(
+            scrim,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        importDialog = scrim
+        updateCaptureWindow(focusable = true)
+        input.requestFocus()
+        input.post {
+            getSystemService(InputMethodManager::class.java)
+                ?.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun closeImportDialog() {
+        val dialog = importDialog ?: return
+        val inputMethodManager = getSystemService(InputMethodManager::class.java)
+        inputMethodManager?.hideSoftInputFromWindow(dialog.windowToken, 0)
+        editor?.removeView(dialog)
+        importDialog = null
+        updateCaptureWindow(focusable = false)
+    }
+
+    private fun shareControls() {
+        val encoded = getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(MAPPING, "[]") ?: "[]"
+        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Mapeamento NexoPlay")
+            putExtra(Intent.EXTRA_TEXT, encoded)
+        }
+        try {
+            startActivity(Intent.createChooser(sendIntent, "Compartilhar mapeamento").apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+        } catch (error: ActivityNotFoundException) {
+            Log.e(TAG, "Não há um app disponível para compartilhar o mapeamento", error)
+            Toast.makeText(this, "Não há um app disponível para compartilhar.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun decodeOverlayControls(encoded: String): List<OverlayControl> {
+        val array = JSONArray(encoded)
+        require(array.length() <= 100) { "o arquivo excede o limite de 100 controles" }
+        return List(array.length()) { index ->
+            val item = array.getJSONObject(index)
+            val type = item.getString("type")
+            require(COMPONENT_TYPES.any { it.first == type }) { "componente desconhecido: $type" }
+            val x = item.optDouble("x", 0.5).toFloat()
+            val y = item.optDouble("y", 0.5).toFloat()
+            require(x.isFinite() && y.isFinite()) { "posição inválida no controle ${index + 1}" }
+            OverlayControl(
+                id = item.optString("id").takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
+                type = type,
+                key = item.optString("key", "Tecla?"),
+                x = x.coerceIn(0f, 1f),
+                y = y.coerceIn(0f, 1f),
+                radius = item.optDouble("radius", 0.85).toFloat().coerceIn(0.35f, 1f),
+                stopOnOpposite = item.optBoolean("stopOnOpposite", true),
+                mousePosition = item.optString("mousePosition", "Centro"),
+                cursorX = item.optDouble("cursorX", 0.5).toFloat().coerceIn(0f, 1f),
+                cursorY = item.optDouble("cursorY", 0.5).toFloat().coerceIn(0f, 1f),
+                preventViewFreeze = item.optBoolean("preventViewFreeze", true),
+                controllerAcceleration = item.optDouble("controllerAcceleration", 0.5).toFloat().coerceIn(0f, 1f),
+                sensitivityX = item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 2f),
+                sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 2f)
+            )
+        }
+    }
+
     private fun addControl(type: String) {
         val root = editor ?: return
         val items = readControls()
@@ -598,7 +963,7 @@ class FloatingBubbleService : Service() {
         }
     }
 
-    private fun renderControls(root: KeyCaptureFrame) {
+    private fun renderControls(root: FrameLayout) {
         val oldViews = (0 until root.childCount)
             .map { root.getChildAt(it) }
             .filter { it.tag == CONTROL_TAG }
@@ -608,24 +973,34 @@ class FloatingBubbleService : Service() {
         val screenHeight = resources.displayMetrics.heightPixels
         readControls().forEach { control ->
             val label = componentLabel(control.type)
-            val view = TextView(this).apply {
-                text = "${control.key}\n$label"
-                textSize = 10f
-                gravity = Gravity.CENTER
-                maxLines = 2
-                setTextColor(Color.BLACK)
-                setPadding(dp(4), dp(4), dp(4), dp(4))
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(0xCC77E4C1.toInt())
-                    setStroke(dp(2), 0xFF77E4C1.toInt())
+            val isJoystick = control.type == "JOYSTICK"
+            val view = if (isJoystick) {
+                JoystickControlView(this, control.key)
+            } else {
+                TextView(this).apply {
+                    text = "${control.key}\n$label"
+                    textSize = 10f
+                    gravity = Gravity.CENTER
+                    maxLines = 2
+                    setTextColor(Color.WHITE)
+                    setPadding(dp(4), dp(4), dp(4), dp(4))
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(0xCC5961C8.toInt())
+                        setStroke(dp(2), 0xFFB8C2FF.toInt())
+                    }
                 }
-                elevation = dp(6).toFloat()
-                tag = CONTROL_TAG
-                contentDescription = "$label, tecla ${control.key}. Toque para alterar. Segure para remover."
             }
-            val controlWidth = dp(68)
-            val controlHeight = dp(68)
+            view.elevation = dp(6).toFloat()
+            view.tag = CONTROL_TAG
+            view.contentDescription = if (isJoystick) {
+                "$label, teclas ${control.key}. Toque para configurar. Segure para remover."
+            } else {
+                "$label, tecla ${control.key}. Toque para alterar. Segure para remover."
+            }
+            val controlSize = if (isJoystick) (dp(112) * control.radius).toInt().coerceAtLeast(dp(70)) else dp(68)
+            val controlWidth = controlSize
+            val controlHeight = controlSize
             val params = FrameLayout.LayoutParams(controlWidth, controlHeight).apply {
                 leftMargin = (control.x * screenWidth - controlWidth / 2)
                     .toInt().coerceIn(0, (screenWidth - controlWidth).coerceAtLeast(0))
@@ -640,6 +1015,7 @@ class FloatingBubbleService : Service() {
     private fun beginCapture(id: String) {
         val root = editor ?: return
         captureTarget = id
+        root.captureEnabled = true
         updateCaptureWindow(focusable = true)
         root.requestFocus()
         Toast.makeText(this, "Pressione a tecla ou o botão do mouse.", Toast.LENGTH_SHORT).show()
@@ -649,6 +1025,7 @@ class FloatingBubbleService : Service() {
     private fun finishCapture(key: String) {
         val target = captureTarget ?: return
         captureTarget = null
+        editor?.captureEnabled = false
         val controls = readControls().map { if (it.id == target) it.copy(key = key) else it }
         writeControls(controls)
         editor?.let(::renderControls)
@@ -671,11 +1048,15 @@ class FloatingBubbleService : Service() {
 
     private fun closeEditor() {
         captureTarget = null
+        editor?.captureEnabled = false
         removeOverlay(editor)
         editor = null
         editorParams = null
         componentPicker = null
         resetConfirmation = null
+        controlSettings = null
+        importDialog = null
+        showKeymapOverlay()
     }
 
     private fun closeMenu() {
@@ -716,7 +1097,16 @@ class FloatingBubbleService : Service() {
                     type = item.getString("type"),
                     key = item.optString("key", "Tecla?"),
                     x = item.optDouble("x", 0.5).toFloat().coerceIn(0f, 1f),
-                    y = item.optDouble("y", 0.5).toFloat().coerceIn(0f, 1f)
+                    y = item.optDouble("y", 0.5).toFloat().coerceIn(0f, 1f),
+                    radius = item.optDouble("radius", 0.85).toFloat().coerceIn(0.35f, 1f),
+                    stopOnOpposite = item.optBoolean("stopOnOpposite", true),
+                    mousePosition = item.optString("mousePosition", "Centro"),
+                    cursorX = item.optDouble("cursorX", 0.5).toFloat().coerceIn(0f, 1f),
+                    cursorY = item.optDouble("cursorY", 0.5).toFloat().coerceIn(0f, 1f),
+                    preventViewFreeze = item.optBoolean("preventViewFreeze", true),
+                    controllerAcceleration = item.optDouble("controllerAcceleration", 0.5).toFloat().coerceIn(0f, 1f),
+                    sensitivityX = item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 2f),
+                    sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 2f)
                 )
             }
         } catch (error: JSONException) {
@@ -753,6 +1143,15 @@ class FloatingBubbleService : Service() {
                     .put("key", control.key)
                     .put("x", control.x.toDouble())
                     .put("y", control.y.toDouble())
+                    .put("radius", control.radius.toDouble())
+                    .put("stopOnOpposite", control.stopOnOpposite)
+                    .put("mousePosition", control.mousePosition)
+                    .put("cursorX", control.cursorX.toDouble())
+                    .put("cursorY", control.cursorY.toDouble())
+                    .put("preventViewFreeze", control.preventViewFreeze)
+                    .put("controllerAcceleration", control.controllerAcceleration.toDouble())
+                    .put("sensitivityX", control.sensitivityX.toDouble())
+                    .put("sensitivityY", control.sensitivityY.toDouble())
                 result.put(item)
             } catch (error: JSONException) {
                 Log.e(TAG, "Não foi possível salvar um controle", error)
@@ -811,7 +1210,8 @@ class FloatingBubbleService : Service() {
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     handler.removeCallbacks(removeRunnable)
                     if (event.actionMasked == MotionEvent.ACTION_UP && !moved && !longPressed) {
-                        beginCapture(id)
+                        val control = readControls().firstOrNull { it.id == id }
+                        if (control?.type == "JOYSTICK") showControlSettings(id) else beginCapture(id)
                     } else if (moved) {
                         updateControlPosition(
                             id,
@@ -883,10 +1283,42 @@ class FloatingBubbleService : Service() {
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
             setPadding(dp(12), dp(8), dp(12), dp(8))
-            background = roundedBackground(0xFF2A3442.toInt(), 0xFF3B4B5D.toInt(), dp(10))
+            background = roundedBackground(0xFF4A55B0.toInt(), 0xFF8790F0.toInt(), dp(12))
             isClickable = true
             isFocusable = true
             setOnClickListener { onClick() }
+        }
+
+    private fun menuAction(symbol: String, label: String, onClick: () -> Unit): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { onClick() }
+            addView(
+                TextView(this@FloatingBubbleService).apply {
+                    text = symbol
+                    textSize = 24f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(0xFF5961C8.toInt())
+                        setStroke(dp(1), 0xFF9BE5F3.toInt())
+                    }
+                },
+                LinearLayout.LayoutParams(dp(48), dp(48))
+            )
+            addView(
+                TextView(this@FloatingBubbleService).apply {
+                    text = label
+                    textSize = 11f
+                    gravity = Gravity.CENTER
+                    setTextColor(Color.WHITE)
+                    setPadding(0, dp(6), 0, 0)
+                }
+            )
         }
 
     private fun componentLabel(type: String): String =

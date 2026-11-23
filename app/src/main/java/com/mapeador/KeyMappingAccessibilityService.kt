@@ -113,8 +113,15 @@ class KeyMappingAccessibilityService : AccessibilityService() {
         return dispatchGesture(gesture, null, null)
     }
 
-    private fun normalizeKey(value: String): String =
-        value.uppercase().removePrefix("KEYCODE_").replace(" ", "_")
+    private fun normalizeKey(value: String): String {
+        val key = value.uppercase().removePrefix("KEYCODE_").replace(" ", "_")
+        return when (key) {
+            "BUTTON_1" -> "MOUSE_LEFT"
+            "BUTTON_2" -> "MOUSE_RIGHT"
+            "BUTTON_3" -> "MOUSE_MIDDLE"
+            else -> key
+        }
+    }
 
     private data class TouchMapping(val type: String, val x: Float, val y: Float)
 

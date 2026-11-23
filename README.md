@@ -1,20 +1,24 @@
 # NexoPlay
 
-Primeira versão em desenvolvimento de um mapeador Android com editor de controles,
-lista de jogos e botão flutuante.
+Primeira versão em desenvolvimento do NexoPlay, um mapeador Android com launcher
+de jogos, editor de controles sobreposto e botão flutuante. A tela Jogos abre por
+padrão; selecione um app instalado e toque em **Iniciar** para abrir o jogo com a
+bolha do NexoPlay.
 
 Durante o jogo, toque na bolha NexoPlay e escolha **Editar keymap neste jogo**.
-Adicione um tipo de controle, pressione a tecla ou o botão do mouse que deseja
-associar e arraste o indicador para a posição correspondente no HUD. Toque em um
-indicador existente para alterar a tecla ou mantenha-o pressionado para removê-lo.
-Use **Sair** para fechar apenas o editor. Para encerrar a bolha e o serviço,
-selecione **Desativar** no menu flutuante, na barra do editor ou na notificação.
+No editor, use a barra sobre o jogo para adicionar componentes, salvar, importar,
+compartilhar ou limpar o mapeamento. Arraste os indicadores redondos até as posições
+correspondentes no HUD. Toque em um indicador para configurar a tecla; no joystick,
+toque para ajustar o tamanho ou alterar o atalho. Mantenha um indicador pressionado
+para removê-lo. Use **Sair** para fechar apenas o editor. Para encerrar a bolha e o
+serviço, selecione **Desativar botão flutuante** no menu ou na notificação.
 
 Para mapear teclas durante o jogo, habilite o serviço **NexoPlay - Mapeamento de
 teclado** nas configurações de Acessibilidade do Android e desligue **Digitação do
 teclado** em Ajustes. O usuário escolhe os jogos permitidos na aba Jogos.
 Na versão atual, os componentes Toque e Mouse Pick enviam toques, e Deslizar envia
-um movimento horizontal. Os demais tipos ainda são apenas controles visuais.
+um movimento horizontal. Joystick, macros, scroll e modos de visão continuam sendo
+configurações visuais; seus gestos ainda não são executados.
 
 ## Gerar o APK
 

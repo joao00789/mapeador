@@ -6,12 +6,15 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.hardware.input.InputManager
 import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.util.Log
 import android.view.InputDevice
@@ -22,6 +25,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -37,6 +41,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -51,6 +56,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -88,6 +94,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.viewinterop.AndroidView
+import android.widget.ImageView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -102,10 +110,12 @@ import java.net.InetSocketAddress
 import java.net.Socket
 import kotlin.math.roundToInt
 
-private val Ink = Color(0xFF10131B)
-private val Panel = Color(0xFF1A1F2B)
-private val Muted = Color(0xFF9AA4B2)
-private val Accent = Color(0xFF77E4C1)
+private val Ink = Color(0xFFE9E9F8)
+private val Panel = Color(0xFF5961C8)
+private val Muted = Color(0xFFE0E2FF)
+private val Accent = Color(0xFF9BE5F3)
+private val TextPrimary = Color(0xFF222654)
+private val PanelDark = Color(0xFF202449)
 
 private enum class ComponentType(val title: String) {
     TOUCH("Toque"),
@@ -130,11 +140,13 @@ private data class MappedComponent(
     val preventViewFreeze: Boolean = true,
     val controllerAcceleration: Float = 0.5f,
     val sensitivityX: Float = 1f,
-    val sensitivityY: Float = 1f
+    val sensitivityY: Float = 1f,
+    val joystickRadius: Float = 0.85f,
+    val stopOnOpposite: Boolean = true
 )
 
 private enum class AppPage(val label: String) {
-    HOME("Início"),
+    HOME("Status"),
     GAMES("Jogos"),
     EDITOR("Editor"),
     SETTINGS("Ajustes")
@@ -145,8 +157,19 @@ private data class GameApp(val packageName: String, val label: String)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
         setContent {
-            MaterialTheme {
+            MaterialTheme(
+                colorScheme = androidx.compose.material3.lightColorScheme(
+                    primary = Panel,
+                    secondary = Color(0xFF737BE4),
+                    background = Ink,
+                    surface = Color.White,
+                    onPrimary = Color.White,
+                    onBackground = TextPrimary,
+                    onSurface = TextPrimary
+                )
+            ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = Ink
@@ -165,7 +188,7 @@ private fun MapeadorApp() {
     val lifecycleOwner = LocalLifecycleOwner.current
     val preferences = remember { context.getSharedPreferences("mapeador", Context.MODE_PRIVATE) }
 
-    var page by remember { mutableStateOf(AppPage.HOME) }
+    var page by remember { mutableStateOf(AppPage.GAMES) }
     var games by remember { mutableStateOf(loadGames(context)) }
     var showGamePicker by remember { mutableStateOf(false) }
     var components by remember { mutableStateOf(loadComponents(preferences)) }
@@ -175,7 +198,8 @@ private fun MapeadorApp() {
     var importError by remember { mutableStateOf<String?>(null) }
     var shizukuState by remember { mutableStateOf(shizukuStatus()) }
     var keyMappingServiceEnabled by remember { mutableStateOf(isKeyMappingServiceEnabled(context)) }
-    var typingEnabled by remember { mutableStateOf(preferences.getBoolean("typing", true)) }
+    // Mapping mode must be the default: otherwise the accessibility service rejects every key.
+    var typingEnabled by remember { mutableStateOf(preferences.getBoolean("typing", false)) }
     var indicatorsEnabled by remember { mutableStateOf(preferences.getBoolean("indicators", true)) }
     var indicatorOpacity by remember {
         mutableFloatStateOf(preferences.getFloat("opacity", 0.8f))
@@ -262,7 +286,14 @@ private fun MapeadorApp() {
                         selected = page == destination,
                         onClick = { page = destination },
                         icon = { Text(destination.label.take(1), fontWeight = FontWeight.Bold) },
-                        label = { Text(destination.label) }
+                        label = { Text(destination.label) },
+                        colors = NavigationBarItemDefaults.colors(
+                            selectedIconColor = Accent,
+                            selectedTextColor = Color.White,
+                            unselectedIconColor = Color.White.copy(alpha = 0.72f),
+                            unselectedTextColor = Color.White.copy(alpha = 0.72f),
+                            indicatorColor = PanelDark
+                        )
                     )
                 }
             }
@@ -329,7 +360,7 @@ private fun MapeadorApp() {
                         components = components + MappedComponent(
                             id = java.util.UUID.randomUUID().toString(),
                             type = type,
-                            key = if (type == ComponentType.JOYSTICK) "WASD" else "Toque",
+                            key = if (type == ComponentType.JOYSTICK) "WASD" else "TECLA?",
                             x = 0.5f,
                             y = 0.5f
                         )
@@ -513,13 +544,13 @@ private fun Header(page: AppPage) {
             )
             Text(
                 "NEXOPLAY",
-                color = Accent,
+                color = Panel,
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(start = 8.dp)
             )
         }
-        Text(page.label, color = Color.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
+        Text(page.label, color = TextPrimary, fontSize = 26.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -553,7 +584,12 @@ private fun HomePage(
                 }
             }
         }
-        Text("STATUS DO DISPOSITIVO", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        Text(
+            "STATUS DO DISPOSITIVO",
+            color = TextPrimary.copy(alpha = 0.62f),
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             StatusCard("Bateria", batteryLevel?.let { "$it%" } ?: "—", Modifier.weight(1f))
             StatusCard("Ping Wi-Fi", wifiPing, Modifier.weight(1f))
@@ -565,38 +601,42 @@ private fun HomePage(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(Modifier.padding(16.dp)) {
-                Text("Ativação Shizuku", color = Color.White, fontWeight = FontWeight.SemiBold)
-                Text(shizukuState, color = Muted, modifier = Modifier.padding(top = 5.dp, bottom = 12.dp))
+                Text("Shizuku", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "$shizukuState. O Shizuku autoriza recursos Android; o serviço de Acessibilidade continua precisando ser ativado nas configurações.",
+                    color = Muted,
+                    modifier = Modifier.padding(top = 5.dp, bottom = 12.dp)
+                )
                 OutlinedButton(onClick = onConnectShizuku) {
                     Text(if (shizukuState == "Conectado e autorizado") "Verificar conexão" else "Conectar")
                 }
             }
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Panel),
-                shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Mapeamento de teclado", color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        if (keyMappingServiceEnabled) {
-                            "Serviço de acessibilidade ativo. Desative “Digitação do teclado” em Ajustes para mapear teclas."
-                        } else {
-                            "Para enviar toques ao jogo, o Android exige ativar o serviço de acessibilidade do NexoPlay."
-                        },
-                        color = Muted,
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(top = 5.dp, bottom = 12.dp)
-                    )
-                    OutlinedButton(onClick = onEnableKeyMapping) {
-                        Text(if (keyMappingServiceEnabled) "Abrir configurações de acessibilidade" else "Ativar mapeamento")
-                    }
+        }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Panel),
+            shape = RoundedCornerShape(18.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(Modifier.padding(16.dp)) {
+                Text("Mapeamento de teclado", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (keyMappingServiceEnabled) {
+                        "Serviço ativo. No modo de jogo, as teclas mapeadas são reservadas aos controles; você pode reativar a digitação em Ajustes."
+                    } else {
+                        "Para enviar toques ao jogo, o Android exige ativar o serviço de acessibilidade do NexoPlay."
+                    },
+                    color = Muted,
+                    fontSize = 12.sp,
+                    modifier = Modifier.padding(top = 5.dp, bottom = 12.dp)
+                )
+                OutlinedButton(onClick = onEnableKeyMapping) {
+                    Text(if (keyMappingServiceEnabled) "Abrir configurações de acessibilidade" else "Ativar mapeamento")
                 }
             }
         }
         Text(
             "Latência TCP pela conexão Wi-Fi até 1.1.1.1:443; não é o ping do servidor do jogo.",
-            color = Muted,
+            color = TextPrimary.copy(alpha = 0.68f),
             fontSize = 12.sp,
             modifier = Modifier.padding(bottom = 16.dp)
         )
@@ -624,61 +664,187 @@ private fun GamesPage(
     onRemoveGame: (GameApp) -> Unit,
     onStartGame: (GameApp) -> Unit
 ) {
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Panel),
-            shape = RoundedCornerShape(20.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(Modifier.padding(18.dp)) {
-                Text("Seus jogos", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    "Adicione jogos instalados. Iniciar abre o jogo e mostra o botão flutuante NexoPlay.",
-                    color = Muted,
-                    fontSize = 13.sp,
-                    modifier = Modifier.padding(top = 6.dp, bottom = 14.dp)
-                )
-                Button(onClick = onAddGame, modifier = Modifier.fillMaxWidth()) {
-                    Text("Adicionar jogo")
-                }
-            }
+    val context = LocalContext.current
+    var inputDevices by remember { mutableStateOf(readPhysicalInputDevices()) }
+    DisposableEffect(context) {
+        val inputManager = context.getSystemService(Context.INPUT_SERVICE) as InputManager
+        val listener = object : InputManager.InputDeviceListener {
+            private fun refresh() { inputDevices = readPhysicalInputDevices() }
+            override fun onInputDeviceAdded(deviceId: Int) = refresh()
+            override fun onInputDeviceRemoved(deviceId: Int) = refresh()
+            override fun onInputDeviceChanged(deviceId: Int) = refresh()
         }
-        if (games.isEmpty()) {
-            Text(
-                "Nenhum jogo adicionado. Toque em “Adicionar jogo” para escolher um app instalado.",
-                color = Muted,
-                modifier = Modifier.padding(vertical = 12.dp)
+        inputManager.registerInputDeviceListener(listener, Handler(Looper.getMainLooper()))
+        onDispose { inputManager.unregisterInputDeviceListener(listener) }
+    }
+    var selectedPackage by remember { mutableStateOf(games.firstOrNull()?.packageName) }
+    LaunchedEffect(games) {
+        if (games.none { it.packageName == selectedPackage }) {
+            selectedPackage = games.firstOrNull()?.packageName
+        }
+    }
+    val selectedGame = games.firstOrNull { it.packageName == selectedPackage }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ConnectionChip(
+                "Teclado",
+                if (inputDevices.first) "Detectado no Android" else "Não detectado",
+                Modifier.weight(1f)
+            )
+            ConnectionChip(
+                "Mouse",
+                if (inputDevices.second) "Detectado no Android" else "Não detectado",
+                Modifier.weight(1f)
             )
         }
-        games.forEach { game ->
-            Card(
-                colors = CardDefaults.cardColors(containerColor = Panel),
-                shape = RoundedCornerShape(18.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(game.label, color = Color.White, fontWeight = FontWeight.SemiBold)
-                    Text(game.packageName, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 3.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Seus jogos", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                Text("Selecione um jogo para iniciar com o NexoPlay.", color = TextPrimary.copy(alpha = 0.68f), fontSize = 12.sp)
+            }
+            Button(onClick = onAddGame) { Text("＋ Adicionar") }
+        }
+
+        if (games.isEmpty()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                    shape = RoundedCornerShape(22.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Button(onClick = { onStartGame(game) }, modifier = Modifier.weight(1f)) {
-                            Text("Iniciar")
+                        Text("Nenhum jogo ainda", color = TextPrimary, fontWeight = FontWeight.Bold)
+                        Text(
+                            "Adicione um jogo instalado para configurar seu mapeamento.",
+                            color = TextPrimary.copy(alpha = 0.68f),
+                            modifier = Modifier.padding(top = 6.dp, bottom = 14.dp)
+                        )
+                        OutlinedButton(onClick = onAddGame) { Text("Escolher jogo") }
+                    }
+                }
+            }
+        } else {
+            Column(
+                modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                games.chunked(2).forEach { rowGames ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        rowGames.forEach { game ->
+                            val selected = game.packageName == selectedPackage
+                            Card(
+                                modifier = Modifier.weight(1f).clickable { selectedPackage = game.packageName },
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (selected) Panel else Color.White
+                                ),
+                                shape = RoundedCornerShape(20.dp),
+                                border = if (selected) null else androidx.compose.foundation.BorderStroke(
+                                    1.dp,
+                                    Panel.copy(alpha = 0.16f)
+                                )
+                            ) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    horizontalAlignment = Alignment.CenterHorizontally
+                                ) {
+                                    GameAppIcon(game, selected)
+                                    Text(
+                                        game.label,
+                                        color = if (selected) Color.White else TextPrimary,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1,
+                                        modifier = Modifier.padding(top = 8.dp)
+                                    )
+                                    TextButton(
+                                        onClick = { onRemoveGame(game) },
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
+                                    ) {
+                                        Text(
+                                            "Remover",
+                                            color = if (selected) Color.White.copy(alpha = 0.78f) else Panel,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                            }
                         }
-                        OutlinedButton(onClick = { onRemoveGame(game) }) { Text("Remover") }
+                        if (rowGames.size == 1) {
+                            Box(Modifier.weight(1f))
+                        }
                     }
                 }
             }
         }
-        Text(
-            "O Android pedirá permissão para exibir a bolha sobre outros apps. Depois de autorizar, o jogo é iniciado automaticamente.",
-            color = Muted,
-            fontSize = 12.sp,
-            modifier = Modifier.padding(bottom = 16.dp)
+
+        Button(
+            onClick = { selectedGame?.let(onStartGame) },
+            enabled = selectedGame != null,
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp)
+        ) {
+            Text(if (selectedGame == null) "Selecione um jogo" else "Iniciar ${selectedGame.label}")
+        }
+    }
+}
+
+@Composable
+private fun ConnectionChip(title: String, subtitle: String, modifier: Modifier = Modifier) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = Color.White),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(title, color = TextPrimary, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+            Text(subtitle, color = TextPrimary.copy(alpha = 0.62f), fontSize = 10.sp, maxLines = 1)
+        }
+    }
+}
+
+private fun readPhysicalInputDevices(): Pair<Boolean, Boolean> {
+    var keyboard = false
+    var mouse = false
+    InputDevice.getDeviceIds().forEach { deviceId ->
+        val device = InputDevice.getDevice(deviceId) ?: return@forEach
+        if (device.isVirtual) return@forEach
+        keyboard = keyboard || device.supportsSource(InputDevice.SOURCE_KEYBOARD)
+        mouse = mouse || device.supportsSource(InputDevice.SOURCE_MOUSE)
+    }
+    return keyboard to mouse
+}
+
+@Composable
+private fun GameAppIcon(game: GameApp, selected: Boolean) {
+    val context = LocalContext.current
+    val icon = remember(game.packageName) {
+        try {
+            context.packageManager.getApplicationIcon(game.packageName)
+        } catch (_: PackageManager.NameNotFoundException) {
+            null
+        }
+    }
+    if (icon == null) {
+        Box(
+            modifier = Modifier.size(58.dp).clip(RoundedCornerShape(16.dp)).background(
+                if (selected) Color.White.copy(alpha = 0.18f) else Panel.copy(alpha = 0.12f)
+            ),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(game.label.take(1).uppercase(), color = if (selected) Color.White else Panel, fontSize = 24.sp)
+        }
+    } else {
+        AndroidView(
+            factory = { ImageView(it).apply { scaleType = ImageView.ScaleType.FIT_CENTER } },
+            update = { it.setImageDrawable(icon) },
+            modifier = Modifier.size(58.dp).clip(RoundedCornerShape(16.dp))
         )
     }
 }
@@ -708,8 +874,8 @@ private fun GamePickerDialog(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Column(Modifier.fillMaxWidth()) {
-                                Text(game.label, color = Color.White)
-                                Text(game.packageName, color = Muted, fontSize = 10.sp)
+                                Text(game.label, color = TextPrimary)
+                                Text(game.packageName, color = TextPrimary.copy(alpha = 0.62f), fontSize = 10.sp)
                             }
                         }
                     }
@@ -737,24 +903,27 @@ private fun EditorPage(
     onShare: () -> Unit,
     onSave: () -> Unit
 ) {
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+    Row(
+        modifier = Modifier.fillMaxSize(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text("Componentes", color = Muted, fontSize = 13.sp)
-        Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Column(
+            modifier = Modifier.width(176.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            ComponentType.entries.forEach { type ->
-                FilterChip(
-                    selected = false,
-                    onClick = { onAdd(type) },
-                    label = { Text("+ ${type.title}") }
-                )
+            Text("Adicionar controle", color = TextPrimary, fontWeight = FontWeight.Bold)
+            listOf(ComponentType.TOUCH, ComponentType.SWIPE, ComponentType.MOUSE_PICK).forEach { type ->
+                OutlinedButton(onClick = { onAdd(type) }, modifier = Modifier.fillMaxWidth()) {
+                    Text("+ ${type.title}", maxLines = 1)
+                }
             }
+            Button(onClick = onSave, modifier = Modifier.fillMaxWidth()) { Text("Salvar") }
+            OutlinedButton(onClick = onImport, modifier = Modifier.fillMaxWidth()) { Text("Importar") }
+            OutlinedButton(onClick = onShare, modifier = Modifier.fillMaxWidth()) { Text("Compartilhar") }
+            Text("Arraste para mover. Toque para vincular; segure para remover.", color = TextPrimary.copy(alpha = 0.68f), fontSize = 11.sp)
         }
         MappingCanvas(
+            modifier = Modifier.weight(1f).fillMaxSize(),
             components = components,
             indicatorsEnabled = indicatorsEnabled,
             indicatorOpacity = indicatorOpacity,
@@ -764,24 +933,12 @@ private fun EditorPage(
             onConfigure = onConfigure,
             onRemove = onRemove
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onSave, modifier = Modifier.weight(1f)) {
-                Text("Salvar")
-            }
-            OutlinedButton(onClick = onImport, modifier = Modifier.weight(1f)) { Text("Importar") }
-            OutlinedButton(onClick = onShare, modifier = Modifier.weight(1f)) { Text("Compartilhar") }
-        }
-        Text(
-            "Arraste os controles para posicionar. Toque em um controle para vincular uma tecla; pressione e segure para removê-lo.",
-            color = Muted,
-            fontSize = 12.sp,
-            modifier = Modifier.padding(bottom = 18.dp)
-        )
     }
 }
 
 @Composable
 private fun MappingCanvas(
+    modifier: Modifier = Modifier,
     components: List<MappedComponent>,
     indicatorsEnabled: Boolean,
     indicatorOpacity: Float,
@@ -793,15 +950,13 @@ private fun MappingCanvas(
 ) {
     val density = LocalDensity.current
     BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(390.dp)
+        modifier = modifier
             .clip(RoundedCornerShape(20.dp))
             .background(Color(0xFF202A35))
             .border(1.dp, Color(0xFF384554), RoundedCornerShape(20.dp))
     ) {
         val canvasWidthPx = with(density) { maxWidth.toPx() }
-        val canvasHeightPx = with(density) { 390.dp.toPx() }
+        val canvasHeightPx = with(density) { maxHeight.toPx() }
         Canvas(Modifier.fillMaxSize()) {
             val spacing = 32.dp.toPx()
             var x = 0f
@@ -828,11 +983,12 @@ private fun MappingCanvas(
             } else {
                 Color(0xFF4A5360)
             }
+            val componentSize = if (component.type == ComponentType.JOYSTICK) 82f else 68f
             Surface(
                 modifier = Modifier
                     .offset(
-                        x = (component.x * maxWidth.value - 34f).dp,
-                        y = (component.y * 390f - 26f).dp
+                        x = (component.x * maxWidth.value - componentSize / 2f).dp,
+                        y = (component.y * maxHeight.value - componentSize / 2f).dp
                     )
                     .pointerInput(component.id) {
                         detectDragGestures(
@@ -856,13 +1012,13 @@ private fun MappingCanvas(
                         )
                     },
                 color = color,
-                contentColor = Ink,
+                contentColor = TextPrimary,
                 shape = CircleShape,
                 shadowElevation = 4.dp
             ) {
                 Column(
                     modifier = Modifier
-                        .size(width = if (component.type == ComponentType.JOYSTICK) 76.dp else 68.dp, height = 52.dp)
+                        .size(componentSize.dp)
                         .padding(horizontal = 6.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center
@@ -897,7 +1053,7 @@ private fun FpsViewDialog(
             ) {
                 Text("Atalho atual: ${component.key}")
                 OutlinedButton(onClick = onChangeShortcut) { Text("Alterar tecla de atalho") }
-                Text("Posição do mouse", color = Muted)
+                Text("Posição do mouse", color = TextPrimary.copy(alpha = 0.68f))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     listOf("Centro", "Personalizado").forEach { position ->
                         FilterChip(
@@ -950,7 +1106,7 @@ private fun FpsViewDialog(
                 )
                 Text(
                     "A compatibilidade depende do Android e do jogo; esta opção não altera nem contorna proteções do jogo.",
-                    color = Muted,
+                    color = TextPrimary.copy(alpha = 0.68f),
                     fontSize = 11.sp
                 )
             }
@@ -1017,13 +1173,13 @@ private fun SettingsPage(
                         .background(previewColor(indicatorColor).copy(alpha = indicatorOpacity))
                         .padding(horizontal = 16.dp, vertical = 10.dp)
                 ) {
-                    Text("W  •  Atirar", color = Ink, fontWeight = FontWeight.Bold)
+                    Text("W  •  Atirar", color = TextPrimary, fontWeight = FontWeight.Bold)
                 }
             }
         }
         Text(
             "Ajustes de aceleração e suspensão do mouse ficam nas propriedades do componente Visão FPS.",
-            color = Muted,
+            color = TextPrimary.copy(alpha = 0.68f),
             fontSize = 12.sp,
             modifier = Modifier.padding(bottom = 16.dp)
         )
@@ -1210,6 +1366,8 @@ private fun encodeComponents(components: List<MappedComponent>): String =
                     .put("controllerAcceleration", component.controllerAcceleration.toDouble())
                     .put("sensitivityX", component.sensitivityX.toDouble())
                     .put("sensitivityY", component.sensitivityY.toDouble())
+                    .put("radius", component.joystickRadius.toDouble())
+                    .put("stopOnOpposite", component.stopOnOpposite)
             )
         }
     }.toString()
@@ -1233,7 +1391,9 @@ private fun decodeComponents(json: String): List<MappedComponent> {
             preventViewFreeze = item.optBoolean("preventViewFreeze", true),
             controllerAcceleration = item.optDouble("controllerAcceleration", 0.5).toFloat().coerceIn(0f, 1f),
             sensitivityX = item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 2f),
-            sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 2f)
+            sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 2f),
+            joystickRadius = item.optDouble("radius", 0.85).toFloat().coerceIn(0.35f, 1f),
+            stopOnOpposite = item.optBoolean("stopOnOpposite", true)
         )
     }
 }
