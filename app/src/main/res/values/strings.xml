@@ -1,4 +1,0 @@
-<resources>
-    <string name="key_mapping_service_name">NexoPlay - Mapeamento de teclado</string>
-    <string name="key_mapping_service_description">Converte teclas mapeadas em toques nos jogos escolhidos pelo usuário. Só funciona quando a digitação está desativada.</string>
-</resources>

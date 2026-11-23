@@ -40,6 +40,11 @@ import org.json.JSONObject
 import java.util.UUID
 import kotlin.math.abs
 
+internal object FloatingBubbleIntent {
+    const val GAME_PACKAGE = "com.mapeador.extra.GAME_PACKAGE"
+    const val MAPPING_JSON = "com.mapeador.extra.MAPPING_JSON"
+}
+
 private data class OverlayControl(
     val id: String,
     val type: String,
@@ -57,7 +62,15 @@ private data class OverlayControl(
     val sensitivityY: Float = 1f
 )
 
-private class JoystickControlView(context: android.content.Context, private val key: String) : View(context) {
+private fun withOpacity(color: Int, opacity: Float): Int =
+    (color and 0x00FFFFFF) or ((opacity.coerceIn(0f, 1f) * 255).toInt() shl 24)
+
+private class JoystickControlView(
+    context: android.content.Context,
+    private val key: String,
+    private val indicatorColor: Int,
+    private val opacity: Float
+) : View(context) {
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
 
     override fun onDraw(canvas: Canvas) {
@@ -66,11 +79,11 @@ private class JoystickControlView(context: android.content.Context, private val 
         val centerY = height / 2f
         val radius = minOf(centerX, centerY) * 0.88f
 
-        paint.color = 0xCC303A9B.toInt()
+        paint.color = withOpacity(indicatorColor, opacity * 0.72f)
         paint.style = Paint.Style.FILL
         canvas.drawCircle(centerX, centerY, radius, paint)
 
-        paint.color = 0xFFB8C2FF.toInt()
+        paint.color = withOpacity(indicatorColor, opacity)
         paint.style = Paint.Style.STROKE
         paint.strokeWidth = resources.displayMetrics.density * 2f
         canvas.drawCircle(centerX, centerY, radius, paint)
@@ -143,18 +156,39 @@ class FloatingBubbleService : Service() {
     private var menuParams: WindowManager.LayoutParams? = null
     private var editorParams: WindowManager.LayoutParams? = null
     private var captureTarget: String? = null
+    private var activeGamePackage: String? = null
     private val handler = Handler(Looper.getMainLooper())
+    private val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key in setOf(MAPPING, "indicators", "opacity", "indicator_color")) {
+            handler.post {
+                keymapOverlay?.let(::renderControls)
+                if (key == MAPPING) {
+                    val saved = getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(MAPPING, "[]") ?: "[]"
+                    activeGamePackage?.let { ShizukuInputBridge.startMapping(this, it, saved) }
+                }
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE).registerOnSharedPreferenceChangeListener(preferenceListener)
         startAsForegroundService()
         if (Settings.canDrawOverlays(this)) showBubble() else stopSelf()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            ShizukuInputBridge.stopMapping()
+            activeGamePackage = null
             stopSelf()
             return START_NOT_STICKY
+        }
+        val gamePackage = intent?.getStringExtra(FloatingBubbleIntent.GAME_PACKAGE)
+        val mapping = intent?.getStringExtra(FloatingBubbleIntent.MAPPING_JSON)
+        if (!gamePackage.isNullOrBlank() && !mapping.isNullOrBlank()) {
+            activeGamePackage = gamePackage
+            ShizukuInputBridge.startMapping(this, gamePackage, mapping)
         }
         if (bubble == null && Settings.canDrawOverlays(this)) showBubble()
         return START_NOT_STICKY
@@ -163,6 +197,8 @@ class FloatingBubbleService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        ShizukuInputBridge.stopMapping()
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(preferenceListener)
         removeOverlay(editor)
         removeOverlay(menu)
         removeOverlay(bubble)
@@ -172,6 +208,7 @@ class FloatingBubbleService : Service() {
         resetConfirmation = null
         controlSettings = null
         importDialog = null
+        activeGamePackage = null
         menu = null
         bubble = null
         keymapOverlay = null
@@ -969,13 +1006,21 @@ class FloatingBubbleService : Service() {
             .filter { it.tag == CONTROL_TAG }
         oldViews.forEach(root::removeView)
 
+        val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+        if (!preferences.getBoolean("indicators", true)) return
+        val opacity = preferences.getFloat("opacity", 0.8f).coerceIn(0.15f, 1f)
+        val indicatorColor = when (preferences.getString("indicator_color", "Verde")) {
+            "Azul" -> 0xFF70B7FF.toInt()
+            "Roxo" -> 0xFFBE91FF.toInt()
+            else -> 0xFF66E3A4.toInt()
+        }
         val screenWidth = resources.displayMetrics.widthPixels
         val screenHeight = resources.displayMetrics.heightPixels
         readControls().forEach { control ->
             val label = componentLabel(control.type)
             val isJoystick = control.type == "JOYSTICK"
             val view = if (isJoystick) {
-                JoystickControlView(this, control.key)
+                JoystickControlView(this, control.key, indicatorColor, opacity)
             } else {
                 TextView(this).apply {
                     text = "${control.key}\n$label"
@@ -986,8 +1031,8 @@ class FloatingBubbleService : Service() {
                     setPadding(dp(4), dp(4), dp(4), dp(4))
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.OVAL
-                        setColor(0xCC5961C8.toInt())
-                        setStroke(dp(2), 0xFFB8C2FF.toInt())
+                        setColor(withOpacity(indicatorColor, opacity * 0.72f))
+                        setStroke(dp(2), withOpacity(indicatorColor, opacity))
                     }
                 }
             }
@@ -1158,6 +1203,7 @@ class FloatingBubbleService : Service() {
             }
         }
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit().putString(MAPPING, result.toString()).apply()
+        activeGamePackage?.let { ShizukuInputBridge.startMapping(this, it, result.toString()) }
     }
 
     private inner class ControlTouchListener(private val id: String) : View.OnTouchListener {
@@ -1362,11 +1408,6 @@ class FloatingBubbleService : Service() {
         val COMPONENT_TYPES = listOf(
             Triple("TOUCH", "Toque", "●"),
             Triple("SWIPE", "Deslizar", "↗"),
-            Triple("SCROLL", "Scroll do mouse", "↕"),
-            Triple("MACRO", "Macro", "M"),
-            Triple("JOYSTICK", "Joystick WASD", "WASD"),
-            Triple("FPS_VIEW", "Visão FPS", "◎"),
-            Triple("FREE_LOOK", "Olhar livre", "◉"),
             Triple("MOUSE_PICK", "Mouse Pick", "⊙")
         )
     }

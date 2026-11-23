@@ -1,16 +1,11 @@
 package com.mapeador
 
-import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.input.InputManager
 import android.net.Uri
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.os.BatteryManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -29,12 +24,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -57,6 +52,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -71,7 +70,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -99,15 +97,10 @@ import android.widget.ImageView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import rikka.shizuku.Shizuku
-import java.net.InetSocketAddress
-import java.net.Socket
 import kotlin.math.roundToInt
 
 private val Ink = Color(0xFFE9E9F8)
@@ -146,9 +139,8 @@ private data class MappedComponent(
 )
 
 private enum class AppPage(val label: String) {
-    HOME("Status"),
     GAMES("Jogos"),
-    EDITOR("Editor"),
+    EDITOR("Keymap"),
     SETTINGS("Ajustes")
 }
 
@@ -197,36 +189,18 @@ private fun MapeadorApp() {
     var importText by remember { mutableStateOf<String?>(null) }
     var importError by remember { mutableStateOf<String?>(null) }
     var shizukuState by remember { mutableStateOf(shizukuStatus()) }
-    var keyMappingServiceEnabled by remember { mutableStateOf(isKeyMappingServiceEnabled(context)) }
-    // Mapping mode must be the default: otherwise the accessibility service rejects every key.
-    var typingEnabled by remember { mutableStateOf(preferences.getBoolean("typing", false)) }
     var indicatorsEnabled by remember { mutableStateOf(preferences.getBoolean("indicators", true)) }
     var indicatorOpacity by remember {
         mutableFloatStateOf(preferences.getFloat("opacity", 0.8f))
-    }
-    var sensitivityX by remember {
-        mutableFloatStateOf(preferences.getFloat("sensitivity_x", 1f))
-    }
-    var sensitivityY by remember {
-        mutableFloatStateOf(preferences.getFloat("sensitivity_y", 1f))
     }
     var indicatorColor by remember {
         mutableStateOf(preferences.getString("indicator_color", "Verde") ?: "Verde")
     }
 
-    val wifiPing by produceState(initialValue = "—", context) {
-        while (true) {
-            value = withContext(Dispatchers.IO) { wifiPing(context) }
-            delay(4_000)
-        }
-    }
-    val batteryLevel = rememberBatteryLevel(context)
-
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 shizukuState = shizukuStatus()
-                keyMappingServiceEnabled = isKeyMappingServiceEnabled(context)
                 components = loadComponents(preferences)
                 val pendingPackage = preferences.getString("pending_game", null)
                 if (pendingPackage != null) {
@@ -247,9 +221,14 @@ private fun MapeadorApp() {
         val permissionListener = Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
             if (requestCode == 1001) {
                 shizukuState = if (grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                    "Conectado e autorizado"
+                    "Autorizado; iniciando serviço privilegiado…"
                 } else {
                     "Permissão do Shizuku negada"
+                }
+                if (grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    ShizukuInputBridge.bind(context) { ready, message ->
+                        shizukuState = if (ready) message else "Falha ao iniciar: $message"
+                    }
                 }
             }
         }
@@ -260,18 +239,11 @@ private fun MapeadorApp() {
     LaunchedEffect(components) {
         preferences.edit().putString("mapping", encodeComponents(components)).apply()
     }
-    LaunchedEffect(typingEnabled) { preferences.edit().putBoolean("typing", typingEnabled).apply() }
     LaunchedEffect(indicatorsEnabled) {
         preferences.edit().putBoolean("indicators", indicatorsEnabled).apply()
     }
     LaunchedEffect(indicatorOpacity) {
         preferences.edit().putFloat("opacity", indicatorOpacity).apply()
-    }
-    LaunchedEffect(sensitivityX) {
-        preferences.edit().putFloat("sensitivity_x", sensitivityX).apply()
-    }
-    LaunchedEffect(sensitivityY) {
-        preferences.edit().putFloat("sensitivity_y", sensitivityY).apply()
     }
     LaunchedEffect(indicatorColor) {
         preferences.edit().putString("indicator_color", indicatorColor).apply()
@@ -307,24 +279,6 @@ private fun MapeadorApp() {
         ) {
             Header(page)
             when (page) {
-                AppPage.HOME -> HomePage(
-                    shizukuState = shizukuState,
-                    keyMappingServiceEnabled = keyMappingServiceEnabled,
-                    batteryLevel = batteryLevel,
-                    wifiPing = wifiPing,
-                    onEnableKeyMapping = {
-                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                    },
-                    onConnectShizuku = {
-                        when {
-                            !Shizuku.pingBinder() -> shizukuState = "Shizuku não está iniciado"
-                            Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED ->
-                                shizukuState = "Conectado e autorizado"
-                            else -> Shizuku.requestPermission(1001)
-                        }
-                    },
-                    onOpenEditor = { page = AppPage.EDITOR }
-                )
                 AppPage.GAMES -> GamesPage(
                     games = games,
                     onAddGame = { showGamePicker = true },
@@ -333,7 +287,12 @@ private fun MapeadorApp() {
                         saveGames(preferences, games)
                     },
                     onStartGame = { game ->
-                        if (Settings.canDrawOverlays(context)) {
+                        if (!Shizuku.pingBinder()) {
+                            Toast.makeText(context, "Inicie o Shizuku antes de iniciar o jogo.", Toast.LENGTH_LONG).show()
+                        } else if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                            Shizuku.requestPermission(1001)
+                            Toast.makeText(context, "Autorize o NexoPlay no Shizuku e toque em Iniciar novamente.", Toast.LENGTH_LONG).show()
+                        } else if (Settings.canDrawOverlays(context)) {
                             launchGameWithBubble(context, game.packageName)
                         } else {
                             preferences.edit().putString("pending_game", game.packageName).apply()
@@ -385,17 +344,22 @@ private fun MapeadorApp() {
                     }
                 )
                 AppPage.SETTINGS -> SettingsPage(
-                    typingEnabled = typingEnabled,
+                    shizukuState = shizukuState,
                     indicatorsEnabled = indicatorsEnabled,
                     indicatorOpacity = indicatorOpacity,
-                    sensitivityX = sensitivityX,
-                    sensitivityY = sensitivityY,
                     indicatorColor = indicatorColor,
-                    onTypingChange = { typingEnabled = it },
+                    onConnectShizuku = {
+                        when {
+                            !Shizuku.pingBinder() -> shizukuState = "Shizuku não está iniciado"
+                            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED ->
+                                ShizukuInputBridge.bind(context) { ready, message ->
+                                    shizukuState = if (ready) message else "Falha ao iniciar: $message"
+                                }
+                            else -> Shizuku.requestPermission(1001)
+                        }
+                    },
                     onIndicatorsChange = { indicatorsEnabled = it },
                     onOpacityChange = { indicatorOpacity = it },
-                    onSensitivityXChange = { sensitivityX = it },
-                    onSensitivityYChange = { sensitivityY = it },
                     onColorChange = { indicatorColor = it }
                 )
             }
@@ -416,7 +380,7 @@ private fun MapeadorApp() {
                         .focusable()
                         .onPreviewKeyEvent { event ->
                             if (event.type == KeyEventType.KeyDown) {
-                                val keyName = event.key.toString().uppercase()
+                                val keyName = event.key.toString().uppercase().removePrefix("KEYCODE_")
                                 components = components.map {
                                     if (it.id == targetId) it.copy(key = keyName) else it
                                 }
@@ -551,109 +515,6 @@ private fun Header(page: AppPage) {
             )
         }
         Text(page.label, color = TextPrimary, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-private fun HomePage(
-    shizukuState: String,
-    keyMappingServiceEnabled: Boolean,
-    batteryLevel: Int?,
-    wifiPing: String,
-    onEnableKeyMapping: () -> Unit,
-    onConnectShizuku: () -> Unit,
-    onOpenEditor: () -> Unit
-) {
-    Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
-    ) {
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Panel),
-            shape = RoundedCornerShape(24.dp)
-        ) {
-            Column(Modifier.padding(20.dp)) {
-                Text("Pronto para jogar?", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-                Text(
-                    "Configure teclado e mouse para os seus jogos.",
-                    color = Muted,
-                    modifier = Modifier.padding(top = 6.dp, bottom = 16.dp)
-                )
-                Button(onClick = onOpenEditor, modifier = Modifier.fillMaxWidth()) {
-                    Text("Abrir editor")
-                }
-            }
-        }
-        Text(
-            "STATUS DO DISPOSITIVO",
-            color = TextPrimary.copy(alpha = 0.62f),
-            fontSize = 12.sp,
-            fontWeight = FontWeight.Bold
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StatusCard("Bateria", batteryLevel?.let { "$it%" } ?: "—", Modifier.weight(1f))
-            StatusCard("Ping Wi-Fi", wifiPing, Modifier.weight(1f))
-        }
-        StatusCard("FPS", "Leitura do jogo ainda não disponível", Modifier.fillMaxWidth())
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Panel),
-            shape = RoundedCornerShape(18.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Shizuku", color = Color.White, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "$shizukuState. O Shizuku autoriza recursos Android; o serviço de Acessibilidade continua precisando ser ativado nas configurações.",
-                    color = Muted,
-                    modifier = Modifier.padding(top = 5.dp, bottom = 12.dp)
-                )
-                OutlinedButton(onClick = onConnectShizuku) {
-                    Text(if (shizukuState == "Conectado e autorizado") "Verificar conexão" else "Conectar")
-                }
-            }
-        }
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Panel),
-            shape = RoundedCornerShape(18.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(Modifier.padding(16.dp)) {
-                Text("Mapeamento de teclado", color = Color.White, fontWeight = FontWeight.SemiBold)
-                Text(
-                    if (keyMappingServiceEnabled) {
-                        "Serviço ativo. No modo de jogo, as teclas mapeadas são reservadas aos controles; você pode reativar a digitação em Ajustes."
-                    } else {
-                        "Para enviar toques ao jogo, o Android exige ativar o serviço de acessibilidade do NexoPlay."
-                    },
-                    color = Muted,
-                    fontSize = 12.sp,
-                    modifier = Modifier.padding(top = 5.dp, bottom = 12.dp)
-                )
-                OutlinedButton(onClick = onEnableKeyMapping) {
-                    Text(if (keyMappingServiceEnabled) "Abrir configurações de acessibilidade" else "Ativar mapeamento")
-                }
-            }
-        }
-        Text(
-            "Latência TCP pela conexão Wi-Fi até 1.1.1.1:443; não é o ping do servidor do jogo.",
-            color = TextPrimary.copy(alpha = 0.68f),
-            fontSize = 12.sp,
-            modifier = Modifier.padding(bottom = 16.dp)
-        )
-    }
-}
-
-@Composable
-private fun StatusCard(title: String, value: String, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier,
-        colors = CardDefaults.cardColors(containerColor = Panel),
-        shape = RoundedCornerShape(18.dp)
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Text(title, color = Muted, fontSize = 12.sp)
-            Text(value, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 6.dp))
-        }
     }
 }
 
@@ -827,7 +688,7 @@ private fun GameAppIcon(game: GameApp, selected: Boolean) {
     val icon = remember(game.packageName) {
         try {
             context.packageManager.getApplicationIcon(game.packageName)
-        } catch (_: PackageManager.NameNotFoundException) {
+        } catch (_: Exception) {
             null
         }
     }
@@ -855,37 +716,50 @@ private fun GamePickerDialog(
     onDismiss: () -> Unit,
     onSelect: (GameApp) -> Unit
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Adicionar jogo") },
-        text = {
-            if (games.isEmpty()) {
-                Text("Não encontrei apps com tela de início neste dispositivo.")
-            } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(420.dp)
-                        .verticalScroll(rememberScrollState())
-                ) {
-                    games.forEach { game ->
-                        TextButton(
-                            onClick = { onSelect(game) },
-                            modifier = Modifier.fillMaxWidth()
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Card(
+                modifier = Modifier.fillMaxWidth(0.76f).fillMaxHeight(0.88f),
+                colors = CardDefaults.cardColors(containerColor = Color.White),
+                shape = RoundedCornerShape(24.dp)
+            ) {
+                Column(Modifier.fillMaxSize().padding(18.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Adicionar jogo", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                            Text("Escolha um app instalado para adicionar à biblioteca.", color = TextPrimary.copy(alpha = 0.65f), fontSize = 12.sp)
+                        }
+                        TextButton(onClick = onDismiss) { Text("Fechar") }
+                    }
+                    if (games.isEmpty()) {
+                        Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            Text("Não encontrei apps com tela de início neste dispositivo.", color = TextPrimary)
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Column(Modifier.fillMaxWidth()) {
-                                Text(game.label, color = TextPrimary)
-                                Text(game.packageName, color = TextPrimary.copy(alpha = 0.62f), fontSize = 10.sp)
+                            items(games, key = { it.packageName }) { game ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                                        .clickable { onSelect(game) }.padding(horizontal = 8.dp, vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    GameAppIcon(game, selected = false)
+                                    Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                                        Text(game.label, color = TextPrimary, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                        Text(game.packageName, color = TextPrimary.copy(alpha = 0.6f), fontSize = 10.sp, maxLines = 1)
+                                    }
+                                    Text("Adicionar", color = Panel, fontWeight = FontWeight.SemiBold, fontSize = 12.sp)
+                                }
                             }
                         }
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Fechar") }
         }
-    )
+    }
 }
 
 @Composable
@@ -1119,37 +993,38 @@ private fun FpsViewDialog(
 
 @Composable
 private fun SettingsPage(
-    typingEnabled: Boolean,
+    shizukuState: String,
     indicatorsEnabled: Boolean,
     indicatorOpacity: Float,
-    sensitivityX: Float,
-    sensitivityY: Float,
     indicatorColor: String,
-    onTypingChange: (Boolean) -> Unit,
+    onConnectShizuku: () -> Unit,
     onIndicatorsChange: (Boolean) -> Unit,
     onOpacityChange: (Float) -> Unit,
-    onSensitivityXChange: (Float) -> Unit,
-    onSensitivityYChange: (Float) -> Unit,
     onColorChange: (String) -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        SettingSwitch(
-            title = "Digitação do teclado",
-            description = if (typingEnabled) "O teclado também pode digitar texto." else "Teclas reservadas para os controles do jogo.",
-            checked = typingEnabled,
-            onCheckedChange = onTypingChange
-        )
+        Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+            Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Acesso Shizuku", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "$shizukuState. Essa autorização libera chamadas à API do Shizuku; ela não instala root dentro do app.",
+                    color = Muted,
+                    fontSize = 12.sp
+                )
+                OutlinedButton(onClick = onConnectShizuku) {
+                    Text("Conectar / verificar Shizuku")
+                }
+            }
+        }
         SettingSwitch(
             title = "Mostrar indicadores",
             description = "Exibe as teclas mapeadas sobre a tela.",
             checked = indicatorsEnabled,
             onCheckedChange = onIndicatorsChange
         )
-        SettingSlider("Sensibilidade X", sensitivityX, "Horizontal", onSensitivityXChange)
-        SettingSlider("Sensibilidade Y", sensitivityY, "Vertical", onSensitivityYChange)
         Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
             Column(Modifier.padding(16.dp)) {
                 Text("Aparência dos indicadores", color = Color.White, fontWeight = FontWeight.SemiBold)
@@ -1177,12 +1052,6 @@ private fun SettingsPage(
                 }
             }
         }
-        Text(
-            "Ajustes de aceleração e suspensão do mouse ficam nas propriedades do componente Visão FPS.",
-            color = TextPrimary.copy(alpha = 0.68f),
-            fontSize = 12.sp,
-            modifier = Modifier.padding(bottom = 16.dp)
-        )
     }
 }
 
@@ -1227,85 +1096,30 @@ private fun SettingSlider(
     }
 }
 
-@Composable
-private fun rememberBatteryLevel(context: Context): Int? {
-    var level by remember {
-        mutableStateOf(
-            context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
-                ?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1)
-                ?.takeIf { it >= 0 }
-        )
+private fun shizukuStatus(): String {
+    if (!Shizuku.pingBinder()) return "Shizuku não está iniciado"
+    if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) return "Aguardando autorização"
+    return when (Shizuku.getUid()) {
+        0 -> "Autorizado com identidade root"
+        2000 -> "Autorizado com identidade ADB shell"
+        else -> "Autorizado com UID ${Shizuku.getUid()}"
     }
-    DisposableEffect(context) {
-        val receiver = object : BroadcastReceiver() {
-            override fun onReceive(context: Context?, intent: Intent?) {
-                val current = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
-                level = current.takeIf { it >= 0 }
-            }
-        }
-        val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
-        if (Build.VERSION.SDK_INT >= 33) {
-            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            @Suppress("DEPRECATION")
-            context.registerReceiver(receiver, filter)
-        }
-        onDispose { context.unregisterReceiver(receiver) }
-    }
-    return level
-}
-
-private fun wifiPing(context: Context): String {
-    val manager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    val network = manager.activeNetwork ?: return "Sem Wi-Fi"
-    val capabilities = manager.getNetworkCapabilities(network) ?: return "Sem Wi-Fi"
-    if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Sem Wi-Fi"
-
-    val start = System.nanoTime()
-    return try {
-        Socket().use { socket ->
-            socket.connect(InetSocketAddress("1.1.1.1", 443), 1_200)
-        }
-        "${((System.nanoTime() - start) / 1_000_000).coerceAtLeast(1)} ms"
-    } catch (error: java.io.IOException) {
-        Log.w("Mapeador", "Falha ao medir latência pela conexão Wi-Fi", error)
-        "Indisponível"
-    }
-}
-
-private fun shizukuStatus(): String = when {
-    !Shizuku.pingBinder() -> "Shizuku não está iniciado"
-    Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED ->
-        "Conectado e autorizado"
-    else -> "Aguardando autorização"
-}
-
-private fun isKeyMappingServiceEnabled(context: Context): Boolean {
-    val enabledServices = Settings.Secure.getString(
-        context.contentResolver,
-        Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
-    ) ?: return false
-    val target = ComponentName(context, KeyMappingAccessibilityService::class.java)
-    return enabledServices.split(':').any { ComponentName.unflattenFromString(it) == target }
 }
 
 private fun queryLaunchableGames(context: Context): List<GameApp> {
-    val launchIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
     val packageManager = context.packageManager
-    val activities = if (Build.VERSION.SDK_INT >= 33) {
-        packageManager.queryIntentActivities(
-            launchIntent,
-            PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong())
-        )
+    val applications = if (Build.VERSION.SDK_INT >= 33) {
+        packageManager.getInstalledApplications(PackageManager.ApplicationInfoFlags.of(0))
     } else {
         @Suppress("DEPRECATION")
-        packageManager.queryIntentActivities(launchIntent, PackageManager.MATCH_ALL)
+        packageManager.getInstalledApplications(0)
     }
 
-    return activities.mapNotNull { info ->
-        val packageName = info.activityInfo?.packageName ?: return@mapNotNull null
+    return applications.mapNotNull { appInfo ->
+        val packageName = appInfo.packageName
         if (packageName == context.packageName) return@mapNotNull null
-        GameApp(packageName, info.loadLabel(packageManager).toString())
+        if (packageManager.getLaunchIntentForPackage(packageName) == null) return@mapNotNull null
+        GameApp(packageName, packageManager.getApplicationLabel(appInfo).toString())
     }.distinctBy { it.packageName }.sortedBy { it.label.lowercase() }
 }
 
@@ -1334,7 +1148,11 @@ private fun launchGameWithBubble(context: Context, packageName: String) {
     }
 
     try {
+        val mapping = context.getSharedPreferences("mapeador", Context.MODE_PRIVATE)
+            .getString("mapping", "[]") ?: "[]"
         val serviceIntent = Intent(context, FloatingBubbleService::class.java)
+            .putExtra(FloatingBubbleIntent.GAME_PACKAGE, packageName)
+            .putExtra(FloatingBubbleIntent.MAPPING_JSON, mapping)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(serviceIntent)
         else context.startService(serviceIntent)
 

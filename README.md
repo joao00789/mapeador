@@ -13,12 +13,15 @@ toque para ajustar o tamanho ou alterar o atalho. Mantenha um indicador pression
 para removê-lo. Use **Sair** para fechar apenas o editor. Para encerrar a bolha e o
 serviço, selecione **Desativar botão flutuante** no menu ou na notificação.
 
-Para mapear teclas durante o jogo, habilite o serviço **NexoPlay - Mapeamento de
-teclado** nas configurações de Acessibilidade do Android e desligue **Digitação do
-teclado** em Ajustes. O usuário escolhe os jogos permitidos na aba Jogos.
-Na versão atual, os componentes Toque e Mouse Pick enviam toques, e Deslizar envia
-um movimento horizontal. Joystick, macros, scroll e modos de visão continuam sendo
-configurações visuais; seus gestos ainda não são executados.
+Para mapear teclas, inicie o Shizuku, autorize o NexoPlay em **Ajustes → Acesso
+Shizuku** e conecte o teclado e o mouse USB. O serviço remoto do Shizuku lê os
+eventos de entrada e envia toques ao jogo; não é necessário ativar um serviço de
+Acessibilidade. Se o Shizuku estiver rodando como ADB shell, o acesso aos dispositivos
+de entrada depende da versão e das permissões do fabricante.
+
+A biblioteca mostra os ícones dos apps instalados. No editor, Toque, Mouse Pick e
+Deslizar são executados; joystick, macros, scroll e modos de visão ainda não executam
+ações no jogo.
 
 ## Gerar o APK
 
