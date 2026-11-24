@@ -100,3 +100,10 @@ O APK desta versão é de depuração e não está assinado para distribuição 
 - O bind do serviço Shizuku agora tem limite de 8 s (antes podia ficar pendurado para sempre, sem aviso).
 - O Diagnóstico mostra a versão do app e, se o motor não responde, um relatório do Shizuku
   (iniciado? autorizado? serviço conectado? último erro).
+
+## Novidades da 0.5.2
+
+- Corrigido o erro **"Keymap parado: process name suffix must not be null"**: o serviço do Shizuku
+  agora é iniciado com `processNameSuffix` definido, então o motor do keymap conecta.
+- Captura do mouse (EVIOCGRAB) compatível com mais versões do Android.
+- O app pede a permissão de notificação no Android 13+ (para a notificação "Desativar").

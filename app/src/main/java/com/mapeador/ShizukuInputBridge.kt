@@ -63,9 +63,14 @@ object ShizukuInputBridge {
             return
         }
         pendingCallbacks += callback
+        // processNameSuffix é obrigatório: sem ele o Shizuku lança
+        // "process name suffix must not be null" e o keymap nunca inicia.
         val serviceArgs = Shizuku.UserServiceArgs(
-            ComponentName(context, ShizukuInputUserService::class.java)
-        ).daemon(false).tag("nexoplay-input").version(5)
+            ComponentName(context.applicationContext, ShizukuInputUserService::class.java)
+        ).daemon(false)
+            .processNameSuffix("input")
+            .tag("nexoplay-input")
+            .version(6)
         val serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 remote = binder
@@ -94,8 +99,9 @@ object ShizukuInputBridge {
         connection = serviceConnection
         try {
             Shizuku.bindUserService(serviceArgs, serviceConnection)
-        } catch (error: RuntimeException) {
+        } catch (error: Throwable) {
             connection = null
+            Log.e(TAG, "Falha no bindUserService", error)
             lastError = error.message ?: "Não foi possível iniciar o serviço Shizuku"
             pendingCallbacks.toList().also { pendingCallbacks.clear() }.forEach { it(false, lastError) }
             return
@@ -576,9 +582,15 @@ class ShizukuInputUserService : Binder() {
     private fun grab(stream: FileInputStream): Boolean = try {
         val libcore = Class.forName("libcore.io.Libcore")
         val os = libcore.getField("os").get(null)
-        val ioctl = os.javaClass.getMethod("ioctlInt", java.io.FileDescriptor::class.java, Int::class.javaPrimitiveType)
+        val ioctl = os.javaClass.methods.first { it.name == "ioctlInt" }
         ioctl.isAccessible = true
-        ioctl.invoke(os, stream.fd, EVIOCGRAB)
+        if (ioctl.parameterTypes.size == 2) {
+            ioctl.invoke(os, stream.fd, EVIOCGRAB)
+        } else {
+            // Android 9 e anterior: ioctlInt(fd, cmd, Int32Ref) — o valor 1 liga a captura.
+            val ref = ioctl.parameterTypes[2].getConstructor(Int::class.javaPrimitiveType).newInstance(1)
+            ioctl.invoke(os, stream.fd, EVIOCGRAB, ref)
+        }
         grabNote = ""
         true
     } catch (error: Throwable) {
