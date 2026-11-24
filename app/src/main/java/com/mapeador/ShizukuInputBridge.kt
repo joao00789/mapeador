@@ -865,7 +865,7 @@ class ShizukuInputUserService : Binder() {
         }
     }
 
-    /** Coalesced deltas are applied in full, rebasing the touch before it reaches the screen edge. */
+    /** Applies relative mouse movement to one touch, clamped only by the physical screen bounds. */
     private fun moveLook(touch: TouchInjector, control: Control, deltaX: Float, deltaY: Float) {
         val anchorX = pixelX(control)
         val anchorY = pixelY(control)
@@ -875,32 +875,11 @@ class ShizukuInputUserService : Binder() {
             control.lookY = anchorY
         }
         if (control.finger < 0) return
-        var remainingX = deltaX * control.sensitivityX * MOUSE_LOOK_SCALE
-        var remainingY = deltaY * control.sensitivityY * MOUSE_LOOK_SCALE
-        val limit = minOf(width, height) * LOOK_RADIUS
-        while (remainingX != 0f || remainingY != 0f) {
-            val fractionX = crossingFraction(control.lookX, remainingX, anchorX, limit)
-            val fractionY = crossingFraction(control.lookY, remainingY, anchorY, limit)
-            val fraction = minOf(1f, fractionX, fractionY)
-            control.lookX += remainingX * fraction
-            control.lookY += remainingY * fraction
-            touch.move(control.finger, control.lookX, control.lookY)
-            if (fraction >= 1f) return
-
-            touch.cancel(control.finger)
-            control.finger = touch.down(anchorX, anchorY)
-            control.lookX = anchorX
-            control.lookY = anchorY
-            if (control.finger < 0) return
-            remainingX *= 1f - fraction
-            remainingY *= 1f - fraction
-        }
-    }
-
-    private fun crossingFraction(position: Float, delta: Float, anchor: Float, limit: Float): Float {
-        if (delta == 0f || Math.abs(position + delta - anchor) <= limit) return Float.POSITIVE_INFINITY
-        val boundary = anchor + if (delta > 0f) limit else -limit
-        return ((boundary - position) / delta).coerceIn(0f, 1f)
+        control.lookX = (control.lookX + deltaX * control.sensitivityX * MOUSE_LOOK_SCALE)
+            .coerceIn(0f, (width - 1).toFloat())
+        control.lookY = (control.lookY + deltaY * control.sensitivityY * MOUSE_LOOK_SCALE)
+            .coerceIn(0f, (height - 1).toFloat())
+        touch.move(control.finger, control.lookX, control.lookY)
     }
 
     private fun moveCursor(deltaX: Float, deltaY: Float) {
@@ -1239,8 +1218,6 @@ class ShizukuInputUserService : Binder() {
         const val REL_X = 0
         const val REL_Y = 1
         const val MOUSE_LOOK_SCALE = 1.0f
-        /** Rebase the virtual finger before it gets close to the screen edge. */
-        const val LOOK_RADIUS = 0.3f
         const val MOUSE_MOTION_FRAME_MS = 8L
         const val CURSOR_SPEED = 1.6f
         const val UP = 0

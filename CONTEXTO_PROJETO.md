@@ -36,7 +36,8 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
   esconde (visibility GONE) bolha, indicadores e editor quando o jogo não está na frente.
 - Mouse FPS (`MOUSE_LOOK`): o serviço lê eventos do hub USB via Shizuku sem `EVIOCGRAB`.
   A tecla do controle (padrão `ALT_LEFT`) alterna MIRA (arrasto contínuo a partir do marcador,
-  reinicia na borda: `LOOK_RADIUS`) e CURSOR. O serviço tenta aplicar um `PointerIcon` próprio
+  limitado apenas pelas bordas reais da tela) e CURSOR. Ao suspender, solta o dedo; ao retomar,
+  cria um novo na âncora. O serviço tenta aplicar um `PointerIcon` próprio
   globalmente em versões Android que ainda oferecem essa API oculta; quando indisponível, o app
   desenha uma seta própria no overlay. O Android recente não oferece API pública para trocar a
   seta global de outro app, então o fallback visual não consegue ocultar a seta nativa.
@@ -46,6 +47,8 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 `KEY_SIZE_DP = 40`, `JOYSTICK_SIZE_DP = 88` (× raio 0.35–1.0), `JOYSTICK_MIN_DP = 56`.
 
 ## Histórico
+- 0.6.1 — Mouse FPS não recentraliza mais por raio: o dedo segue os deltas até as bordas reais
+  da tela; só a tecla `MOUSE_LOOK` suspende/retoma a mira e recria o dedo na âncora.
 - 0.5.6 — Remove `EVIOCGRAB`; deixa os eventos do hub seguirem pelo Android e lê o mesmo fluxo
   para teclado/mapeamento. Tenta aplicar um ícone PointerIcon próprio pelo Shizuku nas versões
   que mantêm a API global antiga; exibe cursor desenhado pelo app como fallback. O código do
