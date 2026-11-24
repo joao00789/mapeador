@@ -1438,7 +1438,7 @@ class FloatingBubbleService : Service() {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         card.addView(TextView(this).apply {
-            text = "No jogo o mouse fica preso ao app. A tecla ${keyLabel(control.key)} alterna entre MIRA (mexer a câmera a partir do marcador) e CURSOR PRÓPRIO (seta do app; o botão esquerdo toca onde ela está). Arraste o marcador no editor para posicionar a área da câmera."
+            text = "A MIRA começa ativa quando o jogo abre. A tecla ${keyLabel(control.key)} alterna entre MIRA (arrasto de dedo para mover a câmera) e CURSOR PRÓPRIO (seta do app; o botão esquerdo toca onde ela está, a menos que seja o atalho). Arraste o marcador no editor para posicionar a área da câmera."
             textSize = 12f
             setTextColor(0xFFFFE3E4.toInt())
             setPadding(0, dp(6), 0, dp(12))

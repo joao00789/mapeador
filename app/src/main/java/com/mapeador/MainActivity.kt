@@ -839,7 +839,7 @@ private fun MappingCanvas(
             } else {
                 Color(0xFF4A5360)
             }
-            val componentSize = if (component.type == ComponentType.JOYSTICK) 82f else 68f
+            val componentSize = if (component.type == ComponentType.JOYSTICK) 62f else 46f
             Surface(
                 modifier = Modifier
                     .offset(

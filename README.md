@@ -21,16 +21,17 @@ de entrada depende da versão e das permissões do fabricante.
 
 A biblioteca mostra os ícones dos apps instalados. No editor, Toque, Mouse Pick,
 Deslizar, Joystick (WASD ou Setas) e Mouse FPS são executados. O Mouse FPS lê os deltas
-REL_X/REL_Y do mouse e os converte em movimentos curtos de toque na posição configurada.
-A tecla atribuída ao componente Mouse FPS alterna entre mira ativa e mouse suspenso.
-Ajuste a sensibilidade horizontal e vertical tocando no marcador Mouse FPS no editor.
+REL_X/REL_Y do mouse e os converte em arrastos de dedo na área de câmera configurada.
+A mira começa ativa ao iniciar o jogo; a tecla configurada (Alt esquerdo por padrão)
+alterna entre mira e cursor suspenso. Ajuste sensibilidades X/Y no marcador Mouse FPS.
 
-Mouse próprio: com um controle Mouse FPS no keymap, o app "prende" o mouse USB enquanto o
-jogo está na frente (o ponteiro do Android para de se mexer e os cliques reais não chegam ao
-jogo). A tecla do Mouse FPS (padrão Alt esquerdo) alterna entre MIRA (a câmera anda a partir do
-marcador) e CURSOR PRÓPRIO (uma seta do app; o botão esquerdo toca onde ela está). Ao sair do
-jogo o mouse é devolvido ao Android. Se o Android bloquear a captura, o menu Diagnóstico mostra
-o motivo e o mouse continua funcionando como ponteiro normal do sistema.
+Mouse próprio: com um controle Mouse FPS ou teclas de mouse no keymap, o app tenta capturar
+os nós USB do mouse enquanto o jogo está na frente, impedindo o Android de mover seu cursor
+por conta própria. No modo cursor, o botão esquerdo gera um toque real na posição da seta do
+app (a menos que seja o atalho); no modo mira, o movimento gera arrasto de dedo na tela.
+Ao sair do jogo, a captura é liberada. Se o Android bloquear a captura, o menu Diagnóstico informa a falha e não mostra
+um cursor de software que não esteja recebendo movimento. O teclado continua sendo lido
+independentemente da captura do mouse.
 
 ## Gerar o APK
 
@@ -39,6 +40,16 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 `nexoplay-debug-apk` na seção **Artifacts** da execução.
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
+
+## Novidades da 0.5.8
+
+- Mouse FPS começa em modo mira para mover a câmera sem exigir uma tecla de ativação inicial;
+  o atalho configurado alterna para cursor próprio e suspende a mira.
+- O botão esquerdo no modo cursor injeta um toque no ponto da seta do app. Eventos do mouse
+  só são convertidos em ações quando o nó correspondente foi capturado, evitando cliques duplos.
+- Os controles na prévia do editor ficaram menores.
+- Diagnóstico agora mostra o modo do mouse e o último movimento relativo recebido.
+- Mantém captura exclusiva do mouse USB e libera o dispositivo ao sair do jogo.
 
 ## Novidades da 0.2.0
 

@@ -8,6 +8,7 @@ android {
     namespace = "com.mapeador"
     compileSdk = 35
     buildToolsVersion = "35.0.0"
+    ndkVersion = "27.2.12479018"
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -18,12 +19,20 @@ android {
         applicationId = "com.mapeador"
         minSdk = 24
         targetSdk = 35
-        versionCode = 9
-        versionName = "0.5.6"
+        versionCode = 11
+        versionName = "0.5.8"
+
     }
 
     buildFeatures {
         compose = true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 }
 
