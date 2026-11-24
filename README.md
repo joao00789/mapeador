@@ -25,10 +25,12 @@ REL_X/REL_Y do mouse e os converte em movimentos curtos de toque na posição co
 A tecla atribuída ao componente Mouse FPS alterna entre mira ativa e mouse suspenso.
 Ajuste a sensibilidade horizontal e vertical tocando no marcador Mouse FPS no editor.
 
-Limitação do Android: esta implementação converte movimento do mouse em gestos de toque,
-mas não consegue ocultar globalmente o ponteiro físico do Android em todos os jogos. A
-captura exclusiva/ocultação do cursor depende de suporte de captura de ponteiro no próprio
-jogo ou de integração privilegiada específica do fabricante.
+Mouse próprio: com um controle Mouse FPS no keymap, o app "prende" o mouse USB enquanto o
+jogo está na frente (o ponteiro do Android para de se mexer e os cliques reais não chegam ao
+jogo). A tecla do Mouse FPS (padrão Alt esquerdo) alterna entre MIRA (a câmera anda a partir do
+marcador) e CURSOR PRÓPRIO (uma seta do app; o botão esquerdo toca onde ela está). Ao sair do
+jogo o mouse é devolvido ao Android. Se o Android bloquear a captura, o menu Diagnóstico mostra
+o motivo e o mouse continua funcionando como ponteiro normal do sistema.
 
 ## Gerar o APK
 
@@ -79,3 +81,13 @@ O APK desta versão é de depuração e não está assinado para distribuição 
 - Sensibilidade horizontal e vertical configuráveis no editor.
 - Marcador de Mouse FPS aparece apenas no editor, não sobre o jogo.
 - Serviço Shizuku atualizado para a nova versão do motor.
+
+## Novidades da 0.5.0
+
+- A bolha e os indicadores do keymap só aparecem com o jogo na frente: saiu do jogo, somem;
+  voltou, reaparecem (sem precisar abrir o app de novo).
+- Mouse FPS corrigido: a câmera agora arrasta de verdade (antes o toque ia e voltava e a
+  câmera não girava) e reinicia o arrasto ao chegar na borda da área.
+- Mouse próprio: captura do mouse (EVIOCGRAB) com seta própria desenhada pelo app.
+- Novo item **Diagnóstico** no menu da bolha: mostra Shizuku, jogo na frente, dispositivos lidos,
+  mouse capturado, toques enviados e a última tecla recebida (teste em tempo real).

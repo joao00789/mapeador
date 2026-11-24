@@ -30,10 +30,23 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 5. Motor pausado enquanto o editor está aberto; reinicia ao fechar o editor ou ao mudar o mapeamento.
 6. O serviço devolve uma mensagem de status que o app mostra em Toast.
 
+## Visibilidade e mouse (0.5.0)
+- O serviço Shizuku mantém UMA thread de "jogo na frente?" (dumpsys, ~1 s) que roda mesmo sem
+  teclas mapeadas. O app consulta o estado (`queryState`, transação STATE) a cada 700 ms e
+  esconde (visibility GONE) bolha, indicadores e editor quando o jogo não está na frente.
+- Mouse FPS (`MOUSE_LOOK`): se existir, o mouse é capturado (EVIOCGRAB via `libcore.io.Libcore.os.ioctlInt`)
+  só com o jogo confirmado na frente; ao sair, fecha o arquivo e o Android recebe o mouse de volta.
+  Tecla do controle (padrão `ALT_LEFT`) alterna MIRA (arrasto contínuo a partir do marcador,
+  reinicia na borda: `LOOK_RADIUS`) e CURSOR PRÓPRIO (`CursorView` no overlay; clique esquerdo = toque).
+- Menu da bolha → Diagnóstico (`buildStatus` no serviço Shizuku): usar para descobrir por que algo não funciona.
+
 ## Tamanhos (FloatingBubbleService.kt, companion)
 `KEY_SIZE_DP = 40`, `JOYSTICK_SIZE_DP = 88` (× raio 0.35–1.0), `JOYSTICK_MIN_DP = 56`.
 
 ## Histórico
+- 0.5.0 — Bolha/indicadores só com o jogo na frente; Mouse FPS corrigido (arrasto contínuo);
+  mouse capturado + cursor próprio; Diagnóstico no menu. NÃO compilado/testado em aparelho.
+- 0.4.0 — Componente Mouse FPS (REL_X/REL_Y → toque), sensibilidade X/Y no editor.
 - 0.3.1 — Teclas menores; motor reescrito (leitura direta de /dev/input, multitoque real,
   joystick, nomes de tecla corrigidos, tamanho real da tela/rotação, motor pausado no editor,
   avisos de status). NÃO foi compilado nem testado em aparelho (sem Android SDK no ambiente):

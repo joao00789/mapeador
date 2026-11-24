@@ -64,6 +64,36 @@ private data class OverlayControl(
     val sensitivityY: Float = 1f
 )
 
+/** The app's own mouse arrow. Its tip is the top-left corner of the view. */
+private class CursorView(context: android.content.Context) : View(context) {
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.FILL
+    }
+    private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFE5484D.toInt()
+        style = Paint.Style.STROKE
+        strokeWidth = resources.displayMetrics.density * 1.5f
+    }
+    private val arrow = android.graphics.Path()
+
+    override fun onDraw(canvas: Canvas) {
+        val w = width.toFloat() - outline.strokeWidth
+        val h = height.toFloat() - outline.strokeWidth
+        arrow.reset()
+        arrow.moveTo(0f, 0f)
+        arrow.lineTo(0f, h * 0.82f)
+        arrow.lineTo(w * 0.26f, h * 0.62f)
+        arrow.lineTo(w * 0.46f, h)
+        arrow.lineTo(w * 0.62f, h * 0.92f)
+        arrow.lineTo(w * 0.42f, h * 0.56f)
+        arrow.lineTo(w * 0.85f, h * 0.56f)
+        arrow.close()
+        canvas.drawPath(arrow, fill)
+        canvas.drawPath(arrow, outline)
+    }
+}
+
 private fun withOpacity(color: Int, opacity: Float): Int =
     (color and 0x00FFFFFF) or ((opacity.coerceIn(0f, 1f) * 255).toInt() shl 24)
 
@@ -197,6 +227,26 @@ class FloatingBubbleService : Service() {
     private var captureTarget: String? = null
     private var activeGamePackage: String? = null
     private val handler = Handler(Looper.getMainLooper())
+    /** False while the game is not in front: the bubble and the key indicators are hidden. */
+    private var overlaysVisible = true
+    private var cursorView: View? = null
+    private var cursorShown = false
+    private var diagnosticsView: View? = null
+    private var diagnosticsText: TextView? = null
+    private val statePoller = object : Runnable {
+        override fun run() {
+            pollEngineState()
+            handler.postDelayed(this, if (cursorShown) 25L else 700L)
+        }
+    }
+    private val diagnosticsTicker = object : Runnable {
+        override fun run() {
+            val text = diagnosticsText ?: return
+            text.text = ShizukuInputBridge.diagnostics()
+                ?: "O serviço Shizuku não respondeu. Ele está iniciado e este app está autorizado?"
+            handler.postDelayed(this, 500)
+        }
+    }
     private val preferenceListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key in setOf(MAPPING, "indicators", "opacity", "indicator_color2")) {
             handler.post {
@@ -215,7 +265,8 @@ class FloatingBubbleService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
-            ShizukuInputBridge.stopMapping()
+            handler.removeCallbacks(statePoller)
+            ShizukuInputBridge.stopMapping(true)
             activeGamePackage = null
             stopSelf()
             return START_NOT_STICKY
@@ -228,6 +279,9 @@ class FloatingBubbleService : Service() {
             // once more shortly after, so the engine always has the final screen size.
             startEngine()
             handler.postDelayed({ if (editor == null) relayoutForScreenSize() }, 2500)
+            // Show the bubble and the keys only while the game is in front.
+            handler.removeCallbacks(statePoller)
+            handler.postDelayed(statePoller, 700)
         }
         if (bubble == null && Settings.canDrawOverlays(this)) showBubble()
         return START_NOT_STICKY
@@ -268,6 +322,113 @@ class FloatingBubbleService : Service() {
         keymapOverlay?.let(::renderControls)
         editor?.let(::renderControls)
         if (editor == null && realScreenSize() != engineSize) startEngine()
+    }
+
+    /** Asks the engine if the game is in front and where the app's own mouse cursor is. */
+    private fun pollEngineState() {
+        if (activeGamePackage == null) return
+        val state = ShizukuInputBridge.queryState() ?: return
+        applyGameVisibility(state.foreground != 0)
+        updateCursor(state)
+    }
+
+    /** Hides everything this app draws over other apps when the game is not in front. */
+    private fun applyGameVisibility(visible: Boolean) {
+        if (visible == overlaysVisible) return
+        overlaysVisible = visible
+        val mode = if (visible) View.VISIBLE else View.GONE
+        bubble?.visibility = mode
+        keymapOverlay?.visibility = mode
+        editor?.visibility = mode
+        if (!visible) {
+            closeMenu()
+            closeDiagnostics()
+        }
+    }
+
+    /** Draws the app's own mouse arrow where the engine says it is (only while the mouse is grabbed). */
+    private fun updateCursor(state: ShizukuInputBridge.EngineState) {
+        val root = keymapOverlay
+        if (root == null || !state.cursorVisible || !overlaysVisible) {
+            cursorShown = false
+            cursorView?.visibility = View.GONE
+            return
+        }
+        cursorShown = true
+        var view = cursorView
+        if (view == null || view.parent !== root) {
+            view = CursorView(this)
+            root.addView(view, FrameLayout.LayoutParams(dp(24), dp(34)))
+            cursorView = view
+        }
+        view.visibility = View.VISIBLE
+        view.translationX = state.cursorX.toFloat()
+        view.translationY = state.cursorY.toFloat()
+    }
+
+    private fun showDiagnostics() {
+        if (diagnosticsView != null) return
+        val manager = windowManager ?: return
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0x99080B12.toInt())
+            setOnClickListener { closeDiagnostics() }
+        }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = roundedBackground(0xFF4A1218.toInt(), 0xFFE5484D.toInt(), dp(20))
+            isClickable = true
+            setOnClickListener { }
+            elevation = dp(16).toFloat()
+        }
+        card.addView(TextView(this).apply {
+            text = "Diagnóstico do keymap"
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        })
+        card.addView(TextView(this).apply {
+            text = "Aperte uma tecla ou clique com o mouse: a última tecla recebida aparece abaixo."
+            textSize = 12f
+            setTextColor(0xFFFFE3E4.toInt())
+            setPadding(0, dp(6), 0, dp(10))
+        })
+        val body = TextView(this).apply {
+            text = "Consultando…"
+            textSize = 13f
+            setTextColor(Color.WHITE)
+        }
+        card.addView(body)
+        card.addView(
+            actionButton("Fechar") { closeDiagnostics() },
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)).apply { topMargin = dp(12) }
+        )
+        scrim.addView(
+            card,
+            FrameLayout.LayoutParams(
+                (screenWidth() - dp(36)).coerceAtMost(dp(480)),
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        )
+        val params = fullScreenParams(
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        )
+        try {
+            manager.addView(scrim, params)
+            diagnosticsView = scrim
+            diagnosticsText = body
+            handler.post(diagnosticsTicker)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Não foi possível abrir o diagnóstico", error)
+        }
+    }
+
+    private fun closeDiagnostics() {
+        handler.removeCallbacks(diagnosticsTicker)
+        removeOverlay(diagnosticsView)
+        diagnosticsView = null
+        diagnosticsText = null
     }
 
     /** (Re)starts the key engine with the saved controls and the real screen size. */
@@ -346,7 +507,10 @@ class FloatingBubbleService : Service() {
 
     override fun onDestroy() {
         hideHud()
-        ShizukuInputBridge.stopMapping()
+        handler.removeCallbacks(statePoller)
+        closeDiagnostics()
+        cursorView = null
+        ShizukuInputBridge.stopMapping(true)
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(preferenceListener)
         removeOverlay(editor)
         removeOverlay(menu)
@@ -512,6 +676,10 @@ class FloatingBubbleService : Service() {
             PanelItem("▤", if (hud == null) "Monitor de informações" else "Fechar monitor", true) {
                 closeMenu()
                 if (hud == null) showHud() else hideHud()
+            },
+            PanelItem("☰", "Diagnóstico", true) {
+                closeMenu()
+                showDiagnostics()
             },
             PanelItem("▣", "Abrir app", true) {
                 closeMenu()
@@ -895,6 +1063,7 @@ class FloatingBubbleService : Service() {
         try {
             manager.addView(root, params)
             keymapOverlay = root
+            root.visibility = if (overlaysVisible) View.VISIBLE else View.GONE
             renderControls(root)
         } catch (error: RuntimeException) {
             Log.w(TAG, "Não foi possível exibir os indicadores do keymap", error)
@@ -905,6 +1074,8 @@ class FloatingBubbleService : Service() {
     private fun hideKeymapOverlay() {
         removeOverlay(keymapOverlay)
         keymapOverlay = null
+        cursorView = null
+        cursorShown = false
     }
 
     private fun showResetConfirmation() {
@@ -1142,7 +1313,7 @@ class FloatingBubbleService : Service() {
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
         card.addView(TextView(this).apply {
-            text = "Tecla ${keyLabel(control.key)} alterna entre mira ativa e mouse suspenso. Arraste o marcador no editor para posicionar a área de mira."
+            text = "No jogo o mouse fica preso ao app. A tecla ${keyLabel(control.key)} alterna entre MIRA (mexer a câmera a partir do marcador) e CURSOR PRÓPRIO (seta do app; o botão esquerdo toca onde ela está). Arraste o marcador no editor para posicionar a área da câmera."
             textSize = 12f
             setTextColor(0xFFFFE3E4.toInt())
             setPadding(0, dp(6), 0, dp(12))
@@ -1361,7 +1532,11 @@ class FloatingBubbleService : Service() {
         val control = OverlayControl(
             id = UUID.randomUUID().toString(),
             type = type,
-            key = if (type == "JOYSTICK") "WASD" else "Tecla?",
+            key = when (type) {
+                "JOYSTICK" -> "WASD"
+                "MOUSE_LOOK" -> "ALT_LEFT"
+                else -> "Tecla?"
+            },
             x = if (type == "MOUSE_LOOK") 0.76f else 0.28f + offset,
             y = if (type == "MOUSE_LOOK") 0.56f else 0.56f + (items.size % 3) * 0.08f
         )
