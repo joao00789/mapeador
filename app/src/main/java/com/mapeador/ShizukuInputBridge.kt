@@ -332,6 +332,7 @@ private class TouchInjector {
             if (finger != null) {
                 finger.x = x
                 finger.y = y
+                // send() keeps every other active finger down, including a held fire button.
                 send(MotionEvent.ACTION_MOVE)
             }
         }
@@ -550,8 +551,8 @@ class ShizukuInputUserService : Binder() {
         lookControl = bindings.values.flatten().map { it.control }.firstOrNull { it.type == "MOUSE_LOOK" }
         mouseManaged = true
         mouseLookActive = lookControl != null
-        cursorX = width / 2f
-        cursorY = height / 2f
+        cursorX = 0f
+        cursorY = 0f
         cursorFinger = -1
         if (foregroundState < 0) foregroundState = 2
         foreground = foregroundState != 0
@@ -899,6 +900,8 @@ class ShizukuInputUserService : Binder() {
             }
             if (cursorFinger >= 0) touch?.cancel(cursorFinger)
             cursorFinger = -1
+            cursorX = 0f
+            cursorY = 0f
             pendingMouseDeltaX = 0.0
             pendingMouseDeltaY = 0.0
             mouseLookActive = active
@@ -976,6 +979,7 @@ class ShizukuInputUserService : Binder() {
             }
             return
         }
+        // In aim mode MOUSE_LEFT stays mapped to its held touch while Mouse FPS moves a separate finger.
         val list = bindings[key] ?: return
         if (!foreground && down) return
         list.forEach { binding ->

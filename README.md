@@ -43,6 +43,12 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
 
+## Novidades da 0.6.2
+
+- O cursor do app começa em `(0,0)` e retorna a essa posição quando o modo do mouse é alternado.
+- O toque de um botão configurado para **Manter pressionado** permanece ativo enquanto o dedo
+  separado do Mouse FPS acompanha o movimento da câmera.
+
 ## Novidades da 0.6.1
 
 - Separa o modo cursor (mouse suspenso) do modo mira: o cursor próprio e os cliques de navegação
