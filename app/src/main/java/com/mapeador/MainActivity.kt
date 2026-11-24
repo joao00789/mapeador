@@ -136,7 +136,11 @@ private data class MappedComponent(
     val sensitivityX: Float = 1f,
     val sensitivityY: Float = 1f,
     val joystickRadius: Float = 0.85f,
-    val stopOnOpposite: Boolean = true
+    val stopOnOpposite: Boolean = true,
+    val cursorSpeed: Float = 1.6f,
+    val cursorSize: Float = 1f,
+    val pressMode: String = "HOLD",
+    val responseMs: Int = 0
 )
 
 private enum class AppPage(val label: String) {
@@ -1255,6 +1259,10 @@ private fun encodeComponents(components: List<MappedComponent>): String =
                     .put("sensitivityY", component.sensitivityY.toDouble())
                     .put("radius", component.joystickRadius.toDouble())
                     .put("stopOnOpposite", component.stopOnOpposite)
+                    .put("cursorSpeed", component.cursorSpeed.toDouble())
+                    .put("cursorSize", component.cursorSize.toDouble())
+                    .put("pressMode", component.pressMode)
+                    .put("responseMs", component.responseMs)
             )
         }
     }.toString()
@@ -1280,7 +1288,11 @@ private fun decodeComponents(json: String): List<MappedComponent> {
             sensitivityX = item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 2f),
             sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 2f),
             joystickRadius = item.optDouble("radius", 0.85).toFloat().coerceIn(0.35f, 1f),
-            stopOnOpposite = item.optBoolean("stopOnOpposite", true)
+            stopOnOpposite = item.optBoolean("stopOnOpposite", true),
+            cursorSpeed = item.optDouble("cursorSpeed", 1.6).toFloat().coerceIn(0.4f, 5f),
+            cursorSize = item.optDouble("cursorSize", 1.0).toFloat().coerceIn(0.6f, 1.8f),
+            pressMode = item.optString("pressMode", "HOLD"),
+            responseMs = item.optInt("responseMs", 0).coerceIn(0, 300)
         )
     }
 }

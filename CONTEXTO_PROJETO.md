@@ -65,3 +65,4 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 - O mouse USB continua clicando no jogo por conta própria (não há "grab" do dispositivo).
 - Macros, mira virtual, controle de recuo, scroll e modos de visão ainda não existem.
 - Se o Shizuku rodar como ADB shell e o fabricante bloquear `/dev/input`, o app avisa.
+- 0.5.3 — Captura de mouse: seleciona sobrecarga compatível de `ioctlInt` (int ou Int32Ref), reporta motivo se EVIOCGRAB falhar; velocidade e tamanho configuráveis para cursor próprio. Controles de toque ganham ação TOCAR/MANTER e atraso ajustável de 0–300 ms, salvo no mapping e aplicado pelo serviço. Joystick mantém pressionamento contínuo para não interromper o analógico. Não compilado/testado em aparelho.

@@ -61,7 +61,11 @@ private data class OverlayControl(
     val preventViewFreeze: Boolean = true,
     val controllerAcceleration: Float = 0.5f,
     val sensitivityX: Float = 1f,
-    val sensitivityY: Float = 1f
+    val sensitivityY: Float = 1f,
+    val cursorSpeed: Float = 1.6f,
+    val cursorSize: Float = 1f,
+    val pressMode: String = "HOLD",
+    val responseMs: Int = 0
 )
 
 /** The app's own mouse arrow. Its tip is the top-left corner of the view. */
@@ -385,7 +389,8 @@ class FloatingBubbleService : Service() {
         var view = cursorView
         if (view == null || view.parent !== root) {
             view = CursorView(this)
-            root.addView(view, FrameLayout.LayoutParams(dp(24), dp(34)))
+            val scale = readControls().firstOrNull { it.type == "MOUSE_LOOK" }?.cursorSize ?: 1f
+            root.addView(view, FrameLayout.LayoutParams(dp((24 * scale).toInt().coerceIn(18, 60)), dp((34 * scale).toInt().coerceIn(24, 80))))
             cursorView = view
         }
         view.visibility = View.VISIBLE
@@ -482,7 +487,9 @@ class FloatingBubbleService : Service() {
             if (control.type == "MOUSE_LOOK") {
                 item.put("sensitivityX", control.sensitivityX.toDouble())
                 item.put("sensitivityY", control.sensitivityY.toDouble())
+                item.put("cursorSpeed", control.cursorSpeed.toDouble())
             }
+            item.put("pressMode", control.pressMode).put("responseMs", control.responseMs)
             array.put(item)
         }
         return array.toString()
@@ -1187,6 +1194,10 @@ class FloatingBubbleService : Service() {
         val root = editor ?: return
         if (controlSettings != null) return
         val control = readControls().firstOrNull { it.id == id } ?: return
+        if (control.type != "MOUSE_LOOK" && control.type != "JOYSTICK") {
+            showKeySettings(id, control)
+            return
+        }
         if (control.type == "MOUSE_LOOK") {
             showMouseLookSettings(id, control)
             return
@@ -1245,6 +1256,26 @@ class FloatingBubbleService : Service() {
                 })
             }
         )
+        val analogDelayLabel = TextView(this).apply {
+            text = "Resposta do analógico: ${control.responseMs} ms"
+            textSize = 13f
+            setTextColor(Color.WHITE)
+            setPadding(0, dp(6), 0, 0)
+        }
+        card.addView(analogDelayLabel)
+        card.addView(SeekBar(this).apply {
+            max = 30
+            progress = (control.responseMs / 10).coerceIn(0, 30)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val delay = progress * 10
+                    analogDelayLabel.text = "Resposta do analógico: ${delay} ms"
+                    writeControls(readControls().map { if (it.id == id) it.copy(responseMs = delay) else it })
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
+        })
         card.addView(
             Switch(this).apply {
                 text = "Bloquear direções opostas"
@@ -1319,6 +1350,73 @@ class FloatingBubbleService : Service() {
         controlSettings = scrim
     }
 
+    private fun showKeySettings(id: String, control: OverlayControl) {
+        val root = editor ?: return
+        if (controlSettings != null) return
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0x99080B12.toInt())
+            setOnClickListener { closeControlSettings() }
+        }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = roundedBackground(0xFF4A1218.toInt(), 0xFFE5484D.toInt(), dp(20))
+            isClickable = true
+            setOnClickListener { }
+        }
+        card.addView(TextView(this).apply {
+            text = "Configurar ${keyLabel(control.key)}"
+            textSize = 19f
+            setTextColor(Color.WHITE)
+        })
+        card.addView(TextView(this).apply {
+            text = "Resposta: atraso antes de enviar o toque"
+            textSize = 12f
+            setTextColor(0xFFFFE3E4.toInt())
+            setPadding(0, dp(6), 0, dp(8))
+        })
+        val delayLabel = TextView(this).apply {
+            text = "Atraso: ${control.responseMs} ms"
+            setTextColor(Color.WHITE)
+        }
+        card.addView(delayLabel)
+        card.addView(SeekBar(this).apply {
+            max = 30
+            progress = (control.responseMs / 10).coerceIn(0, 30)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val delay = progress * 10
+                    delayLabel.text = "Atraso: $delay ms"
+                    writeControls(readControls().map { if (it.id == id) it.copy(responseMs = delay) else it })
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
+        })
+        card.addView(TextView(this).apply {
+            text = "Ação ao pressionar"
+            setTextColor(Color.WHITE)
+            setPadding(0, dp(8), 0, dp(4))
+        })
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        listOf("Tocar" to "TAP", "Manter pressionado" to "HOLD").forEach { (label, mode) ->
+            modeRow.addView(actionButton(label) {
+                writeControls(readControls().map { if (it.id == id) it.copy(pressMode = mode) else it })
+                Toast.makeText(this@FloatingBubbleService, "Ação: $label", Toast.LENGTH_SHORT).show()
+            }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginEnd = dp(6) })
+        }
+        card.addView(modeRow)
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(actionButton("Alterar tecla") { closeControlSettings(); beginCapture(id) }, LinearLayout.LayoutParams(0, dp(44), 1f))
+            addView(actionButton("Concluir") { closeControlSettings() }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) })
+        }
+        card.addView(footer, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+        scrim.addView(card, FrameLayout.LayoutParams((screenWidth() - dp(36)).coerceAtMost(dp(380)), -2, Gravity.CENTER))
+        root.addView(scrim, FrameLayout.LayoutParams(-1, -1))
+        controlSettings = scrim
+    }
+
     private fun showMouseLookSettings(id: String, control: OverlayControl) {
         val root = editor ?: return
         val scrim = FrameLayout(this).apply {
@@ -1345,7 +1443,7 @@ class FloatingBubbleService : Service() {
             setTextColor(0xFFFFE3E4.toInt())
             setPadding(0, dp(6), 0, dp(12))
         })
-        fun sensitivitySlider(axis: String, value: Float, update: (Float) -> Unit) {
+        fun sensitivitySlider(axis: String, value: Float, minimum: Float = 0.1f, maximum: Float = 4.0f, update: (Float) -> Unit) {
             val label = TextView(this).apply {
                 text = "Sensibilidade $axis: ${"%.1f".format(java.util.Locale.US, value)}x"
                 textSize = 13f
@@ -1353,11 +1451,11 @@ class FloatingBubbleService : Service() {
             }
             card.addView(label)
             card.addView(SeekBar(this).apply {
-                max = 39
-                progress = ((value - 0.1f) * 10f).toInt().coerceIn(0, 39)
+                max = ((maximum - minimum) * 10f).toInt()
+                progress = ((value - minimum) * 10f).toInt().coerceIn(0, max)
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                        val next = 0.1f + progress / 10f
+                        val next = minimum + progress / 10f
                         label.text = "Sensibilidade $axis: ${"%.1f".format(java.util.Locale.US, next)}x"
                         update(next)
                     }
@@ -1371,6 +1469,18 @@ class FloatingBubbleService : Service() {
         }
         sensitivitySlider("vertical", control.sensitivityY) { next ->
             writeControls(readControls().map { if (it.id == id) it.copy(sensitivityY = next) else it })
+        }
+        sensitivitySlider("do cursor", control.cursorSpeed, 0.4f, 4.0f) { next ->
+            writeControls(readControls().map { if (it.id == id) it.copy(cursorSpeed = next) else it })
+        }
+        sensitivitySlider("tamanho da seta", control.cursorSize, 0.6f, 1.8f) { size ->
+            writeControls(readControls().map { if (it.id == id) it.copy(cursorSize = size) else it })
+            cursorView?.let { old ->
+                val params = old.layoutParams
+                params.width = dp((24 * size).toInt().coerceIn(18, 60))
+                params.height = dp((34 * size).toInt().coerceIn(24, 80))
+                old.layoutParams = params
+            }
         }
         val buttons = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -1751,7 +1861,11 @@ class FloatingBubbleService : Service() {
                     preventViewFreeze = item.optBoolean("preventViewFreeze", true),
                     controllerAcceleration = item.optDouble("controllerAcceleration", 0.5).toFloat().coerceIn(0f, 1f),
                     sensitivityX = item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 4f),
-                    sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 4f)
+                    sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 4f),
+                    cursorSpeed = item.optDouble("cursorSpeed", 1.6).toFloat().coerceIn(0.4f, 5f),
+                    cursorSize = item.optDouble("cursorSize", 1.0).toFloat().coerceIn(0.6f, 1.8f),
+                    pressMode = item.optString("pressMode", "HOLD"),
+                    responseMs = item.optInt("responseMs", 0).coerceIn(0, 300)
                 )
             }
         } catch (error: JSONException) {
@@ -1797,6 +1911,10 @@ class FloatingBubbleService : Service() {
                     .put("controllerAcceleration", control.controllerAcceleration.toDouble())
                     .put("sensitivityX", control.sensitivityX.toDouble())
                     .put("sensitivityY", control.sensitivityY.toDouble())
+                    .put("cursorSpeed", control.cursorSpeed.toDouble())
+                    .put("cursorSize", control.cursorSize.toDouble())
+                    .put("pressMode", control.pressMode)
+                    .put("responseMs", control.responseMs)
                 result.put(item)
             } catch (error: JSONException) {
                 Log.e(TAG, "Não foi possível salvar um controle", error)
@@ -1858,7 +1976,7 @@ class FloatingBubbleService : Service() {
                     handler.removeCallbacks(removeRunnable)
                     if (event.actionMasked == MotionEvent.ACTION_UP && !moved && !longPressed) {
                         val control = readControls().firstOrNull { it.id == id }
-                        if (control?.type == "JOYSTICK" || control?.type == "MOUSE_LOOK") showControlSettings(id) else beginCapture(id)
+                        showControlSettings(id)
                     } else if (moved) {
                         updateControlPosition(
                             id,

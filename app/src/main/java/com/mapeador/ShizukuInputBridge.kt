@@ -421,6 +421,7 @@ class ShizukuInputUserService : Binder() {
     private var lookControl: Control? = null
     @Volatile private var cursorX = 0f
     @Volatile private var cursorY = 0f
+    @Volatile private var cursorSpeed = 1.6f
     private var cursorFinger = -1
     @Volatile private var lastKeyText = ""
     @Volatile private var lastKeyAt = 0L
@@ -430,6 +431,9 @@ class ShizukuInputUserService : Binder() {
     }
     private val legacyExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "NexoPlay-LegacyTap").apply { isDaemon = true }
+    }
+    private val responseExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "NexoPlay-KeyResponse").apply { isDaemon = true }
     }
 
     override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
@@ -582,15 +586,14 @@ class ShizukuInputUserService : Binder() {
     private fun grab(stream: FileInputStream): Boolean = try {
         val libcore = Class.forName("libcore.io.Libcore")
         val os = libcore.getField("os").get(null)
-        val ioctl = os.javaClass.methods.first { it.name == "ioctlInt" }
+        val methods = os.javaClass.methods.filter { it.name == "ioctlInt" && it.parameterTypes.size == 3 }
+        val ioctl = methods.firstOrNull { it.parameterTypes[2] == Int::class.javaPrimitiveType }
+            ?: methods.firstOrNull { it.parameterTypes[2].simpleName == "Int32Ref" }
+            ?: error("ioctlInt compatível não encontrado")
         ioctl.isAccessible = true
-        if (ioctl.parameterTypes.size == 2) {
-            ioctl.invoke(os, stream.fd, EVIOCGRAB)
-        } else {
-            // Android 9 e anterior: ioctlInt(fd, cmd, Int32Ref) — o valor 1 liga a captura.
-            val ref = ioctl.parameterTypes[2].getConstructor(Int::class.javaPrimitiveType).newInstance(1)
-            ioctl.invoke(os, stream.fd, EVIOCGRAB, ref)
-        }
+        val third = if (ioctl.parameterTypes[2] == Int::class.javaPrimitiveType) 1
+        else ioctl.parameterTypes[2].getConstructor(Int::class.javaPrimitiveType).newInstance(1)
+        ioctl.invoke(os, stream.fd, EVIOCGRAB, third)
         grabNote = ""
         true
     } catch (error: Throwable) {
@@ -606,7 +609,7 @@ class ShizukuInputUserService : Binder() {
             var handlers = ""
             var events = 0L
             fun flush() {
-                if ((events and 4L) != 0L) {
+                if ((events and (1L shl EV_REL)) != 0L) {
                     handlers.split(' ').filter { it.startsWith("event") }.forEach { result.add(it) }
                 }
             }
@@ -789,8 +792,8 @@ class ShizukuInputUserService : Binder() {
     }
 
     private fun moveCursor(touch: TouchInjector, deltaX: Int, deltaY: Int) {
-        cursorX = (cursorX + deltaX * CURSOR_SPEED).coerceIn(0f, (width - 1).toFloat())
-        cursorY = (cursorY + deltaY * CURSOR_SPEED).coerceIn(0f, (height - 1).toFloat())
+        cursorX = (cursorX + deltaX * cursorSpeed).coerceIn(0f, (width - 1).toFloat())
+        cursorY = (cursorY + deltaY * cursorSpeed).coerceIn(0f, (height - 1).toFloat())
         if (cursorFinger >= 0) touch.move(cursorFinger, cursorX, cursorY)
     }
 
@@ -862,16 +865,32 @@ class ShizukuInputUserService : Binder() {
         }
         val list = bindings[key] ?: return
         if (!foreground && down) return
+        list.forEach { binding ->
+            val delay = binding.control.responseMs.toLong()
+            if (delay == 0L) performBinding(binding, down)
+            else responseExecutor.schedule({ performBinding(binding, down) }, delay, java.util.concurrent.TimeUnit.MILLISECONDS)
+        }
+    }
+
+    private fun performBinding(binding: Binding, down: Boolean) {
         synchronized(lock) {
             val touch = injector ?: return
-            list.forEach { binding ->
-                val control = binding.control
-                when (control.type) {
-                    "MOUSE_LOOK" -> if (down) toggleMouseMode(touch, control)
-                    "TOUCH", "MOUSE_PICK" -> if (down) pressTouch(touch, control) else releaseTouch(touch, control)
-                    "SWIPE" -> if (down) swipe(touch, control)
-                    "JOYSTICK" -> moveJoystick(touch, control, binding.direction, down)
+            val control = binding.control
+            if (control.pressMode == "TAP" && control.type != "JOYSTICK") {
+                if (down) when (control.type) {
+                    "TOUCH", "MOUSE_PICK" -> {
+                        pressTouch(touch, control)
+                        responseExecutor.schedule({ synchronized(lock) { injector?.let { releaseTouch(it, control) } } }, 55, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    }
+                    "SWIPE" -> swipe(touch, control)
                 }
+                return
+            }
+            when (control.type) {
+                "MOUSE_LOOK" -> if (down) toggleMouseMode(touch, control)
+                "TOUCH", "MOUSE_PICK" -> if (down) pressTouch(touch, control) else releaseTouch(touch, control)
+                "SWIPE" -> if (down) swipe(touch, control)
+                "JOYSTICK" -> moveJoystick(touch, control, binding.direction, down)
             }
         }
     }
@@ -985,6 +1004,9 @@ class ShizukuInputUserService : Binder() {
                 item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 4f),
                 item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 4f)
             )
+            control.pressMode = item.optString("pressMode", "HOLD")
+            control.responseMs = item.optInt("responseMs", 0).coerceIn(0, 300)
+            if (type == "MOUSE_LOOK") cursorSpeed = item.optDouble("cursorSpeed", 1.6).toFloat().coerceIn(0.4f, 5f)
             val rawKey = item.optString("key")
             if (type == "JOYSTICK") {
                 val keys = if (rawKey.equals("SETAS", ignoreCase = true)) {
@@ -1030,6 +1052,8 @@ class ShizukuInputUserService : Binder() {
         var finger = -1
         var lookX = 0f
         var lookY = 0f
+        var pressMode = "HOLD"
+        var responseMs = 0
         val held = ArrayList<Int>()
 
         fun reset() {
