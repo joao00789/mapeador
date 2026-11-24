@@ -71,7 +71,7 @@ object ShizukuInputBridge {
         ).daemon(false)
             .processNameSuffix("input")
             .tag("nexoplay-input")
-            .version(9)
+            .version(10)
         val serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 remote = binder
@@ -430,6 +430,7 @@ class ShizukuInputUserService : Binder() {
     @Volatile private var grabMice = false
     private val grabbedPaths = ConcurrentHashMap.newKeySet<String>()
     private val knownMousePaths = ConcurrentHashMap.newKeySet<String>()
+    private val mouseMotionPaths = ConcurrentHashMap.newKeySet<String>()
     private val mouseGrabFailures = ConcurrentHashMap<String, String>()
     @Volatile private var grabNote = ""
     @Volatile private var mouseCandidateSummary = "não identificado"
@@ -552,6 +553,7 @@ class ShizukuInputUserService : Binder() {
         grabMice = false
         grabbedPaths.clear()
         knownMousePaths.clear()
+        mouseMotionPaths.clear()
         mouseGrabFailures.clear()
         devices.values.forEach { stream ->
             try { stream.close() } catch (_: Exception) { }
@@ -575,24 +577,50 @@ class ShizukuInputUserService : Binder() {
     @Synchronized
     private fun scanDevices(runGeneration: Int, denied: IntArray): Int {
         val nodes = File("/dev/input").listFiles { file -> file.name.startsWith("event") }.orEmpty()
-        val mouseNodes = mouseEventNames()
+        val presentPaths = nodes.mapTo(HashSet()) { it.absolutePath }
+        knownMousePaths.retainAll(presentPaths)
+        mouseMotionPaths.retainAll(presentPaths)
+        grabbedPaths.retainAll(presentPaths)
+        mouseGrabFailures.keys.removeIf { it !in presentPaths }
         for (node in nodes) {
             val path = node.absolutePath
             if (devices.containsKey(path)) continue
             try {
                 val stream = FileInputStream(node)
-                if (grabMice && node.name in mouseNodes) {
-                    val errno = try { NativeMouseGrab.grab(stream.fd, true) } catch (error: Throwable) {
-                        grabNote = (error.cause ?: error).message ?: error.javaClass.simpleName
+                if (mouseManaged) {
+                    var capabilityError: String? = null
+                    val capabilities = try {
+                        NativeMouseGrab.capabilities(stream.fd)
+                    } catch (error: Throwable) {
+                        capabilityError = "não foi possível ler capacidades: " +
+                            ((error.cause ?: error).message ?: error.javaClass.simpleName)
                         -1
                     }
-                    if (errno == 0) {
-                        grabbedPaths.add(path)
-                        mouseGrabFailures.remove(path)
+                    if (capabilities < 0) {
+                        mouseGrabFailures[path] = capabilityError
+                            ?: "leitura de capacidades falhou (errno=${-capabilities})"
                     } else {
-                        mouseGrabFailures[path] = if (errno < 0) grabNote.ifEmpty { "erro ioctl $errno" }
-                            else "ioctl EVIOCGRAB falhou (errno=$errno)"
-                        grabNote = mouseGrabFailures[path].orEmpty()
+                        mouseGrabFailures.remove(path)
+                        if ((capabilities and NativeMouseGrab.MOUSE_DEVICE) != 0) {
+                            knownMousePaths.add(path)
+                            if ((capabilities and NativeMouseGrab.MOUSE_MOTION) != 0) {
+                                mouseMotionPaths.add(path)
+                            }
+                            if (grabMice) {
+                                val errno = try { NativeMouseGrab.grab(stream.fd, true) } catch (error: Throwable) {
+                                    grabNote = (error.cause ?: error).message ?: error.javaClass.simpleName
+                                    -1
+                                }
+                                if (errno == 0) {
+                                    grabbedPaths.add(path)
+                                    mouseGrabFailures.remove(path)
+                                } else {
+                                    mouseGrabFailures[path] = if (errno < 0) grabNote.ifEmpty { "erro ioctl $errno" }
+                                        else "ioctl EVIOCGRAB falhou (errno=$errno)"
+                                    grabNote = mouseGrabFailures[path].orEmpty()
+                                }
+                            }
+                        }
                     }
                 }
                 devices[path] = stream
@@ -601,6 +629,12 @@ class ShizukuInputUserService : Binder() {
             } catch (error: Exception) {
                 if (error.message?.contains("Permission denied", ignoreCase = true) == true) denied[0]++
                 else Log.w(tag, "Não foi possível abrir $path", error)
+            }
+        }
+        mouseCandidateSummary = when {
+            knownMousePaths.isEmpty() -> "nenhum nó evdev com botão ou movimento relativo identificado"
+            else -> knownMousePaths.sorted().joinToString { path ->
+                File(path).name + if (path in mouseMotionPaths) " (REL_X/Y)" else " (botões)"
             }
         }
         return devices.size
@@ -614,53 +648,17 @@ class ShizukuInputUserService : Binder() {
         }
     }
 
-    private fun mouseEventNames(): Set<String> {
-        val result = linkedSetOf<String>()
-        try {
-            var handlers = ""
-            var deviceName = ""
-            var events = 0L
-            var keyBits = ""
-            fun flush() {
-                val relative = (events and (1L shl EV_REL)) != 0L
-                val hasButton = try {
-                    val bits = java.math.BigInteger(keyBits.replace(" ", ""), 16)
-                    bits.testBit(BTN_LEFT) || bits.testBit(BTN_RIGHT)
-                } catch (_: Exception) { false }
-                if (relative && (hasButton || deviceName.contains("mouse", ignoreCase = true))) {
-                    handlers.split(' ').filter { it.startsWith("event") }.forEach { result += it }
-                }
-            }
-            File("/proc/bus/input/devices").forEachLine { line ->
-                when {
-                    line.startsWith("I:") -> { flush(); handlers = ""; deviceName = ""; events = 0L; keyBits = "" }
-                    line.startsWith("N: Name=") -> deviceName = line.substringAfter('"').substringBeforeLast('"')
-                    line.startsWith("H: Handlers=") -> handlers = line.substringAfter('=')
-                    line.startsWith("B: EV=") -> events = line.substringAfter('=').trim().toLongOrNull(16) ?: 0L
-                    line.startsWith("B: KEY=") -> keyBits = line.substringAfter('=').trim()
-                }
-            }
-            flush()
-            knownMousePaths.clear()
-            result.forEach { knownMousePaths.add("/dev/input/$it") }
-            mouseGrabFailures.keys.removeIf { it !in knownMousePaths }
-            mouseCandidateSummary = if (result.isEmpty()) "nenhum mouse relativo identificado" else result.sorted().joinToString()
-        } catch (error: Exception) {
-            mouseCandidateSummary = "falha ao identificar mouse: ${error.message ?: error.javaClass.simpleName}"
-        }
-        return result
-    }
-
     private fun refreshMouseGrab() {
         val want = running && mouseManaged && foregroundState != 0
         if (want == grabMice) return
         grabMice = want
-        val mouseNames = mouseEventNames()
-        for ((path, stream) in devices.entries.toList()) {
-            if (File(path).name !in mouseNames) continue
-            devices.remove(path)
+        for (path in knownMousePaths.toList()) {
+            val stream = devices.remove(path)
+            knownMousePaths.remove(path)
+            mouseMotionPaths.remove(path)
             grabbedPaths.remove(path)
-            try { stream.close() } catch (_: Exception) { }
+            mouseGrabFailures.remove(path)
+            try { stream?.close() } catch (_: Exception) { }
         }
         if (running) scanDevices(generation, intArrayOf(0))
     }
@@ -670,6 +668,7 @@ class ShizukuInputUserService : Binder() {
         knownMousePaths.isNotEmpty() && grabbedPaths.containsAll(knownMousePaths) ->
             "assumido pelo app (${grabbedPaths.size} nó(s))"
         grabbedPaths.isNotEmpty() -> "assumido parcialmente (${grabbedPaths.size}/${knownMousePaths.size})"
+        knownMousePaths.isNotEmpty() -> "mouse detectado, mas não capturado; mira usa os eventos REL_X/REL_Y recebidos"
         mouseGrabFailures.isNotEmpty() -> "falha: ${mouseGrabFailures.values.first()}"
         else -> "aguardando nó do mouse ($mouseCandidateSummary)"
     }
@@ -701,11 +700,17 @@ class ShizukuInputUserService : Binder() {
                         if (name != null) onKey(name, value == 1, mouseInput && path in grabbedPaths)
                     }
                     EV_REL -> when (code) {
-                        REL_X -> relativeX += value
-                        REL_Y -> relativeY += value
+                        REL_X -> {
+                            noteMouseMotionPath(path)
+                            relativeX += value
+                        }
+                        REL_Y -> {
+                            noteMouseMotionPath(path)
+                            relativeY += value
+                        }
                     }
                     EV_SYN -> if (code == SYN_REPORT) {
-                        if (relativeX != 0 || relativeY != 0) onMouseMove(relativeX, relativeY)
+                        if (relativeX != 0 || relativeY != 0) onMouseMove(path, relativeX, relativeY)
                         relativeX = 0
                         relativeY = 0
                     }
@@ -779,8 +784,10 @@ class ShizukuInputUserService : Binder() {
 
     // ---------------------------------------------------------------- mouse FPS and own cursor
 
-    private fun onMouseMove(deltaX: Int, deltaY: Int) {
-        if (!foreground || !mouseManaged || !mouseCaptureComplete() || (deltaX == 0 && deltaY == 0)) return
+    private fun onMouseMove(path: String, deltaX: Int, deltaY: Int) {
+        if (!foreground || !mouseManaged || path !in mouseMotionPaths ||
+            (!mouseLookActive && path !in grabbedPaths) || (deltaX == 0 && deltaY == 0)
+        ) return
         lastMouseDeltaX = deltaX
         lastMouseDeltaY = deltaY
         lastMouseMoveAt = SystemClock.elapsedRealtime()
@@ -843,6 +850,15 @@ class ShizukuInputUserService : Binder() {
     private fun mouseCaptureComplete(): Boolean =
         knownMousePaths.isNotEmpty() && grabbedPaths.containsAll(knownMousePaths)
 
+    private fun noteMouseMotionPath(path: String) {
+        if (!mouseManaged) return
+        mouseMotionPaths.add(path)
+        knownMousePaths.add(path)
+        mouseCandidateSummary = knownMousePaths.sorted().joinToString { candidate ->
+            File(candidate).name + if (candidate in mouseMotionPaths) " (REL_X/Y)" else " (botões)"
+        }
+    }
+
     private fun buildStatus(): String {
         val lines = ArrayList<String>()
         lines += "Shizuku: serviço rodando como UID ${android.os.Process.myUid()}"
@@ -857,7 +873,7 @@ class ShizukuInputUserService : Binder() {
         lines += "Cursor próprio do app: ${mouseGrabStatus()}"
         lines += "Modo do mouse: " + if (mouseLookActive) "mira ativa" else "cursor (mira suspensa)"
         lines += "Nós de mouse: $mouseCandidateSummary"
-        if (mouseGrabFailures.isNotEmpty()) lines += "Falhas EVIOCGRAB: " +
+        if (mouseGrabFailures.isNotEmpty()) lines += "Falhas de detecção/captura: " +
             mouseGrabFailures.entries.sortedBy { it.key }.joinToString { "${File(it.key).name}: ${it.value}" }
         lines += "Toques: " + (injector?.summary() ?: "motor parado")
         lines += "Teclas mapeadas: ${bindings.size}"
@@ -1221,6 +1237,10 @@ class ShizukuInputUserService : Binder() {
 }
 
 private object NativeMouseGrab {
+    const val MOUSE_DEVICE = 1
+    const val MOUSE_MOTION = 2
+
     init { System.loadLibrary("mapeador_input") }
+    external fun capabilities(fd: FileDescriptor): Int
     external fun grab(fd: FileDescriptor, enabled: Boolean): Int
 }

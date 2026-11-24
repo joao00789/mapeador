@@ -29,8 +29,9 @@ Mouse próprio: com um controle Mouse FPS ou teclas de mouse no keymap, o app te
 os nós USB do mouse enquanto o jogo está na frente, impedindo o Android de mover seu cursor
 por conta própria. No modo cursor, o botão esquerdo gera um toque real na posição da seta do
 app (a menos que seja o atalho); no modo mira, o movimento gera arrasto de dedo na tela.
-Ao sair do jogo, a captura é liberada. Se o Android bloquear a captura, o menu Diagnóstico informa a falha e não mostra
-um cursor de software que não esteja recebendo movimento. O teclado continua sendo lido
+Ao sair do jogo, a captura é liberada. Se o Android bloquear a captura, a mira ainda tenta
+usar os eventos relativos recebidos, mas o cursor do sistema pode continuar visível. O menu
+Diagnóstico informa se o nó foi detectado e capturado. O teclado continua sendo lido
 independentemente da captura do mouse.
 
 ## Gerar o APK
@@ -50,6 +51,14 @@ O APK desta versão é de depuração e não está assinado para distribuição 
 - Os controles na prévia do editor ficaram menores.
 - Diagnóstico agora mostra o modo do mouse e o último movimento relativo recebido.
 - Mantém captura exclusiva do mouse USB e libera o dispositivo ao sair do jogo.
+
+## Novidades da 0.5.9
+
+- Detecta mouse pelos recursos reais dos nós evdev (movimento REL_X/REL_Y e botões), em vez
+  de depender do nome/ordem informado pelo fabricante Android.
+- A mira pode usar os deltas relativos recebidos mesmo se a captura exclusiva for bloqueada;
+  nesse caso o ponteiro do sistema pode continuar visível e o Diagnóstico informa a falha.
+- O Diagnóstico lista os nós identificados e diferencia movimento do mouse de nós de botões.
 
 ## Novidades da 0.2.0
 
