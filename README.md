@@ -43,6 +43,11 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
 
+## Novidades da 0.6.4
+
+- O Mouse FPS não limita mais o dedo virtual às bordas da tela; o delta relativo continua
+  sendo aplicado mesmo quando a posição simulada passa para fora da área visível.
+
 ## Novidades da 0.6.3
 
 - Suaviza os deltas da mira FPS em quadros curtos, preservando o movimento acumulado e sem

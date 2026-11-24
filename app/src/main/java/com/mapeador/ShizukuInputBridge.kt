@@ -886,7 +886,7 @@ class ShizukuInputUserService : Binder() {
         }
     }
 
-    /** Applies relative mouse movement to one touch, clamped only by the physical screen bounds. */
+    /** Applies relative mouse movement to one touch; camera deltas remain unbounded at screen edges. */
     private fun moveLook(touch: TouchInjector, control: Control, deltaX: Float, deltaY: Float) {
         val anchorX = pixelX(control)
         val anchorY = pixelY(control)
@@ -896,10 +896,8 @@ class ShizukuInputUserService : Binder() {
             control.lookY = anchorY
         }
         if (control.finger < 0) return
-        control.lookX = (control.lookX + deltaX * control.sensitivityX * MOUSE_LOOK_SCALE)
-            .coerceIn(0f, (width - 1).toFloat())
-        control.lookY = (control.lookY + deltaY * control.sensitivityY * MOUSE_LOOK_SCALE)
-            .coerceIn(0f, (height - 1).toFloat())
+        control.lookX += deltaX * control.sensitivityX * MOUSE_LOOK_SCALE
+        control.lookY += deltaY * control.sensitivityY * MOUSE_LOOK_SCALE
         touch.move(control.finger, control.lookX, control.lookY)
     }
 
