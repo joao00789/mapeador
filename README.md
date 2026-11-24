@@ -22,17 +22,18 @@ de entrada depende da versão e das permissões do fabricante.
 A biblioteca mostra os ícones dos apps instalados. No editor, Toque, Mouse Pick,
 Deslizar, Joystick (WASD ou Setas) e Mouse FPS são executados. O Mouse FPS lê os deltas
 REL_X/REL_Y do mouse e os converte em arrastos de dedo na área de câmera configurada.
-A mira começa ativa ao iniciar o jogo; a tecla configurada (Alt esquerdo por padrão)
+A seta própria aparece ao iniciar o jogo, mesmo sem um componente Mouse FPS no keymap.
+Com Mouse FPS, a mira começa ativa e a tecla configurada (Alt esquerdo por padrão)
 alterna entre mira e cursor suspenso. Ajuste sensibilidades X/Y no marcador Mouse FPS.
 
-Mouse próprio: com um controle Mouse FPS ou teclas de mouse no keymap, o app tenta capturar
-os nós USB do mouse enquanto o jogo está na frente, impedindo o Android de mover seu cursor
-por conta própria. No modo cursor, o botão esquerdo gera um toque real na posição da seta do
-app (a menos que seja o atalho); no modo mira, o movimento gera arrasto de dedo na tela.
-Ao sair do jogo, a captura é liberada. Se o Android bloquear a captura, a mira ainda tenta
-usar os eventos relativos recebidos, mas o cursor do sistema pode continuar visível. O menu
-Diagnóstico informa se o nó foi detectado e capturado. O teclado continua sendo lido
-independentemente da captura do mouse.
+Mouse próprio: o app tenta capturar os nós USB do mouse enquanto o jogo está na frente,
+impedindo o Android de mover seu cursor por conta própria. No modo cursor, o botão esquerdo
+gera um toque real na posição da seta do app; no modo mira, o movimento gera arrasto de dedo
+na tela. Os deltas são agrupados em quadros curtos para evitar saturação de eventos, sem
+descartar movimento ao recentralizar o toque. Ao sair do jogo, a captura é liberada. Se o
+Android bloquear a captura, a mira ainda tenta usar os eventos relativos recebidos, mas o
+cursor do sistema pode continuar visível. O menu Diagnóstico informa se o nó foi detectado
+e capturado. O teclado continua sendo lido independentemente da captura do mouse.
 
 ## Gerar o APK
 
@@ -41,6 +42,14 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 `nexoplay-debug-apk` na seção **Artifacts** da execução.
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
+
+## Novidades da 0.6.0
+
+- A seta do app aparece ao abrir um jogo mesmo sem adicionar Mouse FPS; quando a captura está
+  ativa, ela substitui o cursor do Android.
+- A seta é elevada sobre o painel lateral e acompanha o mouse também durante a mira FPS.
+- Os movimentos são agrupados em quadros de 8 ms para suavizar a injeção; ao recentralizar
+  o toque da câmera, o movimento restante não é descartado.
 
 ## Novidades da 0.5.8
 

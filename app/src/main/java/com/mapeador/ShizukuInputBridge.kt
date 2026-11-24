@@ -23,6 +23,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 /** Small Binder bridge: the user service runs as Shizuku's shell/root identity. */
 object ShizukuInputBridge {
@@ -454,6 +455,12 @@ class ShizukuInputUserService : Binder() {
     private val responseExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "NexoPlay-KeyResponse").apply { isDaemon = true }
     }
+    private val mouseMotionExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "NexoPlay-MouseMotion").apply { isDaemon = true }
+    }
+    private var pendingMouseDeltaX = 0.0
+    private var pendingMouseDeltaY = 0.0
+    private var mouseMotionFlushScheduled = false
 
     override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
         if (code == IBinder.INTERFACE_TRANSACTION) {
@@ -511,9 +518,10 @@ class ShizukuInputUserService : Binder() {
         watchedPackage = game
         width = screenWidth
         height = screenHeight
+        cursorSpeed = CURSOR_SPEED
         bindings = parseMappings(json)
         lookControl = bindings.values.flatten().map { it.control }.firstOrNull { it.type == "MOUSE_LOOK" }
-        mouseManaged = lookControl != null || bindings.keys.any { it.startsWith("MOUSE_") }
+        mouseManaged = true
         mouseLookActive = lookControl != null
         cursorX = width / 2f
         cursorY = height / 2f
@@ -523,7 +531,6 @@ class ShizukuInputUserService : Binder() {
         // The watcher also drives the show/hide of the floating panel, so it runs even
         // when there is no key mapped yet.
         ensureForegroundWatcher()
-        if (bindings.isEmpty()) return ""
 
         val touch = TouchInjector()
         injector = touch
@@ -542,7 +549,8 @@ class ShizukuInputUserService : Binder() {
             !touch.available ->
                 "Keymap ativo em modo reduzido: só toques simples (este Android bloqueou a injeção avançada)."
             else ->
-                "Keymap ativo • $opened dispositivo(s) de entrada" +
+                (if (bindings.isEmpty()) "Mouse do app ativo" else "Keymap ativo") +
+                    " • $opened dispositivo(s) de entrada" +
                     if (mouseManaged) " • cursor próprio: ${mouseGrabStatus()}" else ""
         }
     }
@@ -563,6 +571,9 @@ class ShizukuInputUserService : Binder() {
             bindings.values.flatten().forEach { it.control.reset() }
             injector?.releaseAll()
             cursorFinger = -1
+            pendingMouseDeltaX = 0.0
+            pendingMouseDeltaY = 0.0
+            mouseMotionFlushScheduled = false
         }
         injector = null
         lookControl = null
@@ -792,20 +803,43 @@ class ShizukuInputUserService : Binder() {
         lastMouseDeltaY = deltaY
         lastMouseMoveAt = SystemClock.elapsedRealtime()
         synchronized(lock) {
-            val touch = injector ?: return
-            if (!touch.available) return
-            if (mouseLookActive) {
-                val look = lookControl ?: return
-                moveLook(touch, look, deltaX, deltaY)
-            } else {
-                moveCursor(touch, deltaX, deltaY)
-                if (cursorFinger >= 0) touch.move(cursorFinger, cursorX, cursorY)
+            if (!running) return
+            pendingMouseDeltaX += deltaX.toDouble()
+            pendingMouseDeltaY += deltaY.toDouble()
+            if (!mouseMotionFlushScheduled) {
+                mouseMotionFlushScheduled = true
+                val runGeneration = generation
+                mouseMotionExecutor.schedule(
+                    { flushMouseMotion(runGeneration) },
+                    MOUSE_MOTION_FRAME_MS,
+                    TimeUnit.MILLISECONDS
+                )
             }
         }
     }
 
-    /** Camera: the virtual finger drags from the look anchor; at the edge it restarts at the anchor. */
-    private fun moveLook(touch: TouchInjector, control: Control, deltaX: Int, deltaY: Int) {
+    private fun flushMouseMotion(runGeneration: Int) {
+        synchronized(lock) {
+            if (generation != runGeneration || !running) return
+            val deltaX = pendingMouseDeltaX.toFloat()
+            val deltaY = pendingMouseDeltaY.toFloat()
+            pendingMouseDeltaX = 0.0
+            pendingMouseDeltaY = 0.0
+            mouseMotionFlushScheduled = false
+            if (!foreground || !mouseManaged || (deltaX == 0f && deltaY == 0f)) return
+
+            val touch = injector ?: return
+            if (!touch.available) return
+            if (mouseLookActive) {
+                lookControl?.let { moveLook(touch, it, deltaX, deltaY) }
+            }
+            moveCursor(touch, deltaX, deltaY)
+            if (!mouseLookActive && cursorFinger >= 0) touch.move(cursorFinger, cursorX, cursorY)
+        }
+    }
+
+    /** Coalesced deltas are applied in full, rebasing the touch before it reaches the screen edge. */
+    private fun moveLook(touch: TouchInjector, control: Control, deltaX: Float, deltaY: Float) {
         val anchorX = pixelX(control)
         val anchorY = pixelY(control)
         if (control.finger < 0) {
@@ -814,20 +848,35 @@ class ShizukuInputUserService : Binder() {
             control.lookY = anchorY
         }
         if (control.finger < 0) return
-        control.lookX += deltaX * control.sensitivityX * MOUSE_LOOK_SCALE
-        control.lookY += deltaY * control.sensitivityY * MOUSE_LOOK_SCALE
+        var remainingX = deltaX * control.sensitivityX * MOUSE_LOOK_SCALE
+        var remainingY = deltaY * control.sensitivityY * MOUSE_LOOK_SCALE
         val limit = minOf(width, height) * LOOK_RADIUS
-        if (Math.abs(control.lookX - anchorX) > limit || Math.abs(control.lookY - anchorY) > limit) {
+        while (remainingX != 0f || remainingY != 0f) {
+            val fractionX = crossingFraction(control.lookX, remainingX, anchorX, limit)
+            val fractionY = crossingFraction(control.lookY, remainingY, anchorY, limit)
+            val fraction = minOf(1f, fractionX, fractionY)
+            control.lookX += remainingX * fraction
+            control.lookY += remainingY * fraction
+            touch.move(control.finger, control.lookX, control.lookY)
+            if (fraction >= 1f) return
+
             touch.up(control.finger)
             control.finger = touch.down(anchorX, anchorY)
             control.lookX = anchorX
             control.lookY = anchorY
-            return
+            if (control.finger < 0) return
+            remainingX *= 1f - fraction
+            remainingY *= 1f - fraction
         }
-        touch.move(control.finger, control.lookX, control.lookY)
     }
 
-    private fun moveCursor(touch: TouchInjector, deltaX: Int, deltaY: Int) {
+    private fun crossingFraction(position: Float, delta: Float, anchor: Float, limit: Float): Float {
+        if (delta == 0f || Math.abs(position + delta - anchor) <= limit) return Float.POSITIVE_INFINITY
+        val boundary = anchor + if (delta > 0f) limit else -limit
+        return ((boundary - position) / delta).coerceIn(0f, 1f)
+    }
+
+    private fun moveCursor(touch: TouchInjector, deltaX: Float, deltaY: Float) {
         cursorX = (cursorX + deltaX * cursorSpeed).coerceIn(0f, (width - 1).toFloat())
         cursorY = (cursorY + deltaY * cursorSpeed).coerceIn(0f, (height - 1).toFloat())
     }
@@ -842,10 +891,8 @@ class ShizukuInputUserService : Binder() {
     }
 
     /** True while the game is active and the player chose the app's own cursor. */
-    private fun cursorModeActive(): Boolean =
-        running && foreground && mouseManaged && !mouseLookActive
-
-    private fun cursorVisible(): Boolean = cursorModeActive() && mouseCaptureComplete()
+    private fun cursorVisible(): Boolean =
+        running && foreground && mouseManaged && mouseCaptureComplete()
 
     private fun mouseCaptureComplete(): Boolean =
         knownMousePaths.isNotEmpty() && grabbedPaths.containsAll(knownMousePaths)
@@ -897,7 +944,9 @@ class ShizukuInputUserService : Binder() {
         lastKeyAt = SystemClock.elapsedRealtime()
         if (key.startsWith("MOUSE_") && !capturedMouseInput) return
         val mouseLookShortcut = bindings[key].orEmpty().any { it.control.type == "MOUSE_LOOK" }
-        if (key == "MOUSE_LEFT" && lookControl != null && !mouseLookActive && !mouseLookShortcut) {
+        if (key == "MOUSE_LEFT" && !mouseLookActive && !mouseLookShortcut &&
+            (lookControl != null || bindings[key].isNullOrEmpty())
+        ) {
             synchronized(lock) {
                 val touch = injector ?: return
                 if (down) {
@@ -1150,8 +1199,9 @@ class ShizukuInputUserService : Binder() {
         const val REL_X = 0
         const val REL_Y = 1
         const val MOUSE_LOOK_SCALE = 1.0f
-        /** How far (fraction of the short screen side) the camera drag goes before it restarts. */
-        const val LOOK_RADIUS = 0.2f
+        /** Rebase the virtual finger before it gets close to the screen edge. */
+        const val LOOK_RADIUS = 0.3f
+        const val MOUSE_MOTION_FRAME_MS = 8L
         const val CURSOR_SPEED = 1.6f
         const val UP = 0
         const val DOWN = 1

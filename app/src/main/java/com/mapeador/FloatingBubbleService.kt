@@ -24,6 +24,7 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
@@ -230,6 +231,7 @@ class FloatingBubbleService : Service() {
     private var engineSize: Pair<Int, Int>? = null
     private var captureTarget: String? = null
     private var activeGamePackage: String? = null
+    private var lastEngineState: ShizukuInputBridge.EngineState? = null
     private val handler = Handler(Looper.getMainLooper())
     /** False while the game is not in front: the bubble and the key indicators are hidden. */
     private var overlaysVisible = true
@@ -242,7 +244,7 @@ class FloatingBubbleService : Service() {
     private val statePoller = object : Runnable {
         override fun run() {
             pollEngineState()
-            handler.postDelayed(this, if (cursorShown) 25L else 700L)
+            handler.postDelayed(this, if (cursorShown) 16L else 700L)
         }
     }
     private val diagnosticsTicker = object : Runnable {
@@ -346,6 +348,7 @@ class FloatingBubbleService : Service() {
             return
         }
         missedPolls = 0
+        lastEngineState = state
         // Green = engine running and the game in front; yellow = running but cannot tell.
         setBubbleStatus(if (state.foreground == 2) 0xFFFFCC00.toInt() else 0xFF34C759.toInt())
         applyGameVisibility(state.foreground != 0)
@@ -379,7 +382,7 @@ class FloatingBubbleService : Service() {
 
     /** Draws the app cursor when this Android version has no global custom-pointer API. */
     private fun updateCursor(state: ShizukuInputBridge.EngineState) {
-        val root = keymapOverlay
+        val root = (menu as? FrameLayout) ?: keymapOverlay
         if (root == null || !state.cursorVisible || !overlaysVisible) {
             cursorShown = false
             cursorView?.visibility = View.GONE
@@ -387,15 +390,25 @@ class FloatingBubbleService : Service() {
         }
         cursorShown = true
         var view = cursorView
-        if (view == null || view.parent !== root) {
+        if (view == null) {
             view = CursorView(this)
-            val scale = readControls().firstOrNull { it.type == "MOUSE_LOOK" }?.cursorSize ?: 1f
-            root.addView(view, FrameLayout.LayoutParams(dp((24 * scale).toInt().coerceIn(18, 60)), dp((34 * scale).toInt().coerceIn(24, 80))))
             cursorView = view
+        }
+        if (view.parent !== root) {
+            val scale = readControls().firstOrNull { it.type == "MOUSE_LOOK" }?.cursorSize ?: 1f
+            (view.parent as? ViewGroup)?.removeView(view)
+            root.addView(
+                view,
+                FrameLayout.LayoutParams(
+                    dp((24 * scale).toInt().coerceIn(18, 60)),
+                    dp((34 * scale).toInt().coerceIn(24, 80))
+                )
+            )
         }
         view.visibility = View.VISIBLE
         view.translationX = state.cursorX.toFloat()
         view.translationY = state.cursorY.toFloat()
+        view.bringToFront()
     }
 
     private fun showDiagnostics() {
@@ -773,6 +786,7 @@ class FloatingBubbleService : Service() {
         try {
             manager.addView(scrim, params)
             menu = scrim
+            lastEngineState?.let(::updateCursor)
         } catch (error: WindowManager.BadTokenException) {
             Log.e(TAG, "Não foi possível abrir o menu flutuante", error)
             Toast.makeText(this, "Não foi possível abrir o menu flutuante.", Toast.LENGTH_SHORT).show()
@@ -1818,6 +1832,7 @@ class FloatingBubbleService : Service() {
         removeOverlay(menu)
         menu = null
         menuParams = null
+        lastEngineState?.let(::updateCursor)
     }
 
     private fun removeControl(id: String) {
