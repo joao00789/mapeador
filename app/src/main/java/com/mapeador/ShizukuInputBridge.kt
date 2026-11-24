@@ -371,7 +371,7 @@ private class TouchInjector {
             properties, coordinates,
             0, 0, 1f, 1f, 0, 0, InputDevice.SOURCE_TOUCHSCREEN, 0
         )
-        try {
+        return try {
             setDisplayId?.let { setter ->
                 try { setter.invoke(event, 0) } catch (_: Throwable) { }
             }
