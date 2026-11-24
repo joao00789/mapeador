@@ -418,6 +418,7 @@ class ShizukuInputUserService : Binder() {
     @Volatile private var grabMice = false
     private val grabbedPaths = ConcurrentHashMap.newKeySet<String>()
     @Volatile private var grabNote = ""
+    @Volatile private var mouseCandidateSummary = "não identificado"
     private var lookControl: Control? = null
     @Volatile private var cursorX = 0f
     @Volatile private var cursorY = 0f
@@ -509,7 +510,7 @@ class ShizukuInputUserService : Binder() {
         injector = touch
         running = true
         val runGeneration = ++generation
-        grabMice = mouseManaged && foregroundState == 1
+        grabMice = mouseManaged && foregroundState != 0
 
         val denied = intArrayOf(0)
         val opened = scanDevices(runGeneration, denied)
@@ -602,14 +603,23 @@ class ShizukuInputUserService : Binder() {
         false
     }
 
-    /** event nodes (e.g. "event6") whose device reports relative movement = mice and trackballs. */
+    /** Find mouse event nodes, including composite USB devices with several event interfaces. */
     private fun mouseEventNames(): Set<String> {
         val result = HashSet<String>()
         try {
             var handlers = ""
+            var deviceName = ""
             var events = 0L
+            var keyBits = ""
             fun flush() {
-                if ((events and (1L shl EV_REL)) != 0L) {
+                val hasLeftButton = try {
+                    keyBits.isNotBlank() && java.math.BigInteger(keyBits, 16).testBit(BTN_LEFT)
+                } catch (_: NumberFormatException) {
+                    false
+                }
+                val hasRelativeAxes = (events and (1L shl EV_REL)) != 0L
+                val mouseNamed = deviceName.contains("mouse", ignoreCase = true)
+                if ((hasRelativeAxes && hasLeftButton) || (hasRelativeAxes && mouseNamed)) {
                     handlers.split(' ').filter { it.startsWith("event") }.forEach { result.add(it) }
                 }
             }
@@ -618,25 +628,34 @@ class ShizukuInputUserService : Binder() {
                     line.startsWith("I:") -> {
                         flush()
                         handlers = ""
+                        deviceName = ""
                         events = 0L
+                        keyBits = ""
                     }
+                    line.startsWith("N: Name=") -> deviceName = line.substringAfter('"').substringBeforeLast('"')
                     line.startsWith("H: Handlers=") -> handlers = line.substringAfter("=")
                     line.startsWith("B: EV=") -> events = line.substringAfter("=").trim().toLongOrNull(16) ?: 0L
+                    line.startsWith("B: KEY=") -> keyBits = line.substringAfter("=").trim().replace(" ", "")
                 }
             }
             flush()
+            mouseCandidateSummary = if (result.isEmpty()) "nenhum nó relativo com botão esquerdo" else result.sorted().joinToString()
         } catch (error: Exception) {
+            mouseCandidateSummary = "falha ao ler /proc/bus/input/devices: ${error.message ?: error.javaClass.simpleName}"
             Log.w(tag, "Não foi possível listar os mouses", error)
         }
         return result
     }
 
     /**
-     * Grabs the mouse only while the game is confirmed in front, and gives it back to Android
-     * the moment the player leaves the game (closing the file releases the grab).
+     * Grabs the mouse while the game is in front or foreground detection is inconclusive, and
+     * gives it back to Android when the watcher confirms the player left (closing releases it).
      */
     private fun refreshMouseGrab() {
-        val want = running && mouseManaged && foregroundState == 1
+        // Treat an unrecognized dumpsys format like the rest of the engine does:
+        // state 2 is fail-open. Requiring exactly state 1 left the Android pointer
+        // active forever on Android builds that report topResumedActivity instead.
+        val want = running && mouseManaged && foregroundState != 0
         if (want == grabMice) return
         grabMice = want
         val mice = mouseEventNames()
@@ -717,7 +736,11 @@ class ShizukuInputUserService : Binder() {
                     .redirectErrorStream(true).start()
                 val text = process.inputStream.bufferedReader().use { it.readText() }
                 process.waitFor()
-                val resumed = text.lineSequence().filter { it.contains("ResumedActivity") }.toList()
+                val resumed = text.lineSequence().filter {
+                    it.contains("ResumedActivity", ignoreCase = true) ||
+                        it.contains("topResumedActivity", ignoreCase = true) ||
+                        it.contains("mResumedActivity", ignoreCase = true)
+                }.toList()
                 when {
                     resumed.isEmpty() -> 2
                     resumed.any { it.contains("$game/") } -> 1
@@ -838,11 +861,12 @@ class ShizukuInputUserService : Binder() {
         }
         val names = devices.keys.map { File(it).name }.sorted()
         lines += "Entrada lida: " + if (names.isEmpty()) "nenhum dispositivo" else names.joinToString()
+        lines += "Nós candidatos a mouse: $mouseCandidateSummary"
         lines += "Mouse capturado (cursor próprio): " + when {
             grabbedPaths.isNotEmpty() -> "sim"
             !mouseManaged -> "não (nenhum controle de mouse no keymap)"
-            foregroundState != 1 -> "aguardando o jogo ficar na frente"
-            else -> "não (${grabNote.ifEmpty { "nenhum mouse encontrado" }})"
+            foregroundState == 0 -> "aguardando o jogo ficar na frente"
+            else -> "não (${grabNote.ifEmpty { "captura ainda não foi confirmada" }})"
         }
         lines += "Toques: " + (injector?.summary() ?: "motor parado")
         lines += "Teclas mapeadas: ${bindings.size}"
@@ -1079,6 +1103,7 @@ class ShizukuInputUserService : Binder() {
         const val SYN_REPORT = 0
         const val REL_X = 0
         const val REL_Y = 1
+        const val BTN_LEFT = 0x110
         const val MOUSE_LOOK_SCALE = 1.0f
         /** How far (fraction of the short screen side) the camera drag goes before it restarts. */
         const val LOOK_RADIUS = 0.2f
