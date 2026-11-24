@@ -377,7 +377,7 @@ class FloatingBubbleService : Service() {
         }
     }
 
-    /** Draws the app's own mouse arrow where the engine says it is (only while the mouse is grabbed). */
+    /** Draws the app cursor when this Android version has no global custom-pointer API. */
     private fun updateCursor(state: ShizukuInputBridge.EngineState) {
         val root = keymapOverlay
         if (root == null || !state.cursorVisible || !overlaysVisible) {

@@ -10,6 +10,12 @@ import android.os.Looper
 import android.os.Parcel
 import android.os.SystemClock
 import android.util.Log
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.view.PointerIcon
 import android.view.InputDevice
 import android.view.InputEvent
 import android.view.MotionEvent
@@ -70,7 +76,7 @@ object ShizukuInputBridge {
         ).daemon(false)
             .processNameSuffix("input")
             .tag("nexoplay-input")
-            .version(6)
+            .version(7)
         val serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 remote = binder
@@ -417,17 +423,12 @@ class ShizukuInputUserService : Binder() {
     @Volatile private var foregroundState = -1
     private var watcherStarted = false
     @Volatile private var mouseManaged = false
-    @Volatile private var grabMice = false
-    private val grabbedPaths = ConcurrentHashMap.newKeySet<String>()
-    private val knownMousePaths = ConcurrentHashMap.newKeySet<String>()
-    private val mouseGrabFailures = ConcurrentHashMap<String, String>()
-    @Volatile private var grabNote = ""
-    @Volatile private var mouseCandidateSummary = "não identificado"
+    @Volatile private var pointerNote = "não aplicado"
+    @Volatile private var customPointerApplied = false
     private var lookControl: Control? = null
     @Volatile private var cursorX = 0f
     @Volatile private var cursorY = 0f
     @Volatile private var cursorSpeed = 1.6f
-    private var cursorFinger = -1
     @Volatile private var lastKeyText = ""
     @Volatile private var lastKeyAt = 0L
     private val devices = ConcurrentHashMap<String, FileInputStream>()
@@ -474,6 +475,8 @@ class ShizukuInputUserService : Binder() {
             TRANSACTION_STATE -> {
                 reply?.writeNoException()
                 reply?.writeInt(foregroundState)
+                // Prefer the system compositor's custom PointerIcon. Older Android builds that
+                // still expose the global API fall back to our software cursor overlay.
                 reply?.writeInt(if (cursorVisible()) 1 else 0)
                 reply?.writeInt(cursorX.toInt())
                 reply?.writeInt(cursorY.toInt())
@@ -501,6 +504,7 @@ class ShizukuInputUserService : Binder() {
         lookControl = bindings.values.flatten().map { it.control }.firstOrNull { it.type == "MOUSE_LOOK" }
         mouseManaged = lookControl != null || bindings.keys.any { it.startsWith("MOUSE_") }
         mouseLookActive = false
+        if (mouseManaged) applyAppPointerIcon(aim = false)
         cursorX = width / 2f
         cursorY = height / 2f
         if (foregroundState < 0) foregroundState = 2
@@ -514,8 +518,6 @@ class ShizukuInputUserService : Binder() {
         injector = touch
         running = true
         val runGeneration = ++generation
-        grabMice = mouseManaged && foregroundState != 0
-
         val denied = intArrayOf(0)
         val opened = scanDevices(runGeneration, denied)
         Thread({ watchHotplug(runGeneration) }, "NexoPlay-Hotplug").apply { isDaemon = true }.start()
@@ -529,27 +531,20 @@ class ShizukuInputUserService : Binder() {
                 "Keymap ativo em modo reduzido: só toques simples (este Android bloqueou a injeção avançada)."
             else ->
                 "Keymap ativo • $opened dispositivo(s) de entrada" +
-                    if (mouseManaged) {
-                        if (mouseCaptureComplete()) " • Mouse USB capturado pelo app" else
-                            " • Mouse NÃO capturado: ${grabNote.ifEmpty { mouseCandidateSummary }}"
-                    } else ""
+                    if (mouseManaged) " • cursor do app: $pointerNote" else ""
         }
     }
 
     private fun stop() {
         running = false
         generation++
-        grabMice = false
-        grabbedPaths.clear()
-        knownMousePaths.clear()
-        mouseGrabFailures.clear()
+        restoreSystemPointerIcon()
         devices.values.forEach { stream ->
             try { stream.close() } catch (_: Exception) { }
         }
         devices.clear()
         synchronized(lock) {
             bindings.values.flatten().forEach { it.control.reset() }
-            cursorFinger = -1
             injector?.releaseAll()
         }
         injector = null
@@ -565,21 +560,11 @@ class ShizukuInputUserService : Binder() {
     @Synchronized
     private fun scanDevices(runGeneration: Int, denied: IntArray): Int {
         val nodes = File("/dev/input").listFiles { file -> file.name.startsWith("event") }.orEmpty()
-        val mice = mouseEventNames()
         for (node in nodes) {
             val path = node.absolutePath
             if (devices.containsKey(path)) continue
             try {
                 val stream = FileInputStream(node)
-                // A grabbed mouse stops moving Android's own pointer: the app draws its own.
-                if (grabMice && node.name in mice) {
-                    if (grab(stream)) {
-                        grabbedPaths.add(path)
-                        mouseGrabFailures.remove(path)
-                    } else {
-                        mouseGrabFailures[path] = grabNote
-                    }
-                }
                 devices[path] = stream
                 Thread({ readDevice(path, stream, runGeneration) }, "NexoPlay-${node.name}")
                     .apply { isDaemon = true }.start()
@@ -597,96 +582,6 @@ class ShizukuInputUserService : Binder() {
             try { Thread.sleep(2000) } catch (_: InterruptedException) { return }
             if (isRunning(runGeneration)) scanDevices(runGeneration, ignored)
         }
-    }
-
-    /** EVIOCGRAB through the hidden libcore ioctl: the kernel gives this reader the mouse alone. */
-    private fun grab(stream: FileInputStream): Boolean = try {
-        val libcore = Class.forName("libcore.io.Libcore")
-        val os = libcore.getField("os").get(null)
-        val methods = os.javaClass.methods.filter {
-            it.name == "ioctlInt" && it.parameterTypes.size == 3 &&
-                it.parameterTypes[0].isAssignableFrom(stream.fd.javaClass) &&
-                it.parameterTypes[1] == Int::class.javaPrimitiveType
-        }
-        val ioctl = methods.firstOrNull {
-            it.parameterTypes[2] == Int::class.javaPrimitiveType ||
-                it.parameterTypes[2].constructors.any { constructor ->
-                    constructor.parameterTypes.size == 1 &&
-                        constructor.parameterTypes[0] == Int::class.javaPrimitiveType
-                }
-        } ?: error("ioctlInt(fd, EVIOCGRAB, int/ref) compatível não encontrado")
-        ioctl.isAccessible = true
-        val third = if (ioctl.parameterTypes[2] == Int::class.javaPrimitiveType) 1
-        else ioctl.parameterTypes[2].getConstructor(Int::class.javaPrimitiveType).newInstance(1)
-        ioctl.invoke(os, stream.fd, EVIOCGRAB, third)
-        grabNote = ""
-        true
-    } catch (error: Throwable) {
-        grabNote = (error.cause ?: error).let { it.message ?: it.javaClass.simpleName }
-        Log.w(tag, "Não foi possível capturar o mouse", error)
-        false
-    }
-
-    /** Find mouse event nodes, including composite USB devices with several event interfaces. */
-    private fun mouseEventNames(): Set<String> {
-        val result = HashSet<String>()
-        knownMousePaths.clear()
-        try {
-            var handlers = ""
-            var events = 0L
-            fun flush() {
-                val hasRelativeAxes = (events and (1L shl EV_REL)) != 0L
-                // EV_REL is the defining capability for ordinary USB mice. Do not
-                // require a parsed BTN_LEFT bitmap: vendors expose that bitmap in
-                // different word groupings and a false negative leaves Android's
-                // pointer completely untouched.
-                if (hasRelativeAxes) {
-                    handlers.split(' ').filter { it.startsWith("event") }.forEach { result.add(it) }
-                }
-            }
-            File("/proc/bus/input/devices").forEachLine { line ->
-                when {
-                    line.startsWith("I:") -> {
-                        flush()
-                        handlers = ""
-                        events = 0L
-                    }
-                    line.startsWith("H: Handlers=") -> handlers = line.substringAfter("=")
-                    line.startsWith("B: EV=") -> events = line.substringAfter("=").trim().toLongOrNull(16) ?: 0L
-                }
-            }
-            flush()
-            result.forEach { knownMousePaths.add("/dev/input/$it") }
-            mouseGrabFailures.keys.removeIf { it !in knownMousePaths }
-            mouseCandidateSummary = if (result.isEmpty()) "nenhum dispositivo EV_REL encontrado" else result.sorted().joinToString()
-        } catch (error: Exception) {
-            knownMousePaths.clear()
-            mouseCandidateSummary = "falha ao ler /proc/bus/input/devices: ${error.message ?: error.javaClass.simpleName}"
-            Log.w(tag, "Não foi possível listar os mouses", error)
-        }
-        return result
-    }
-
-    /**
-     * Grabs the mouse while the game is in front or foreground detection is inconclusive, and
-     * gives it back to Android when the watcher confirms the player left (closing releases it).
-     */
-    private fun refreshMouseGrab() {
-        // Treat an unrecognized dumpsys format like the rest of the engine does:
-        // state 2 is fail-open. Requiring exactly state 1 left the Android pointer
-        // active forever on Android builds that report topResumedActivity instead.
-        val want = running && mouseManaged && foregroundState != 0
-        if (want == grabMice) return
-        grabMice = want
-        val mice = mouseEventNames()
-        for ((path, stream) in devices.entries.toList()) {
-            if (File(path).name !in mice) continue
-            devices.remove(path)
-            grabbedPaths.remove(path)
-            mouseGrabFailures.remove(path)
-            try { stream.close() } catch (_: Exception) { }
-        }
-        if (running) scanDevices(generation, intArrayOf(0))
     }
 
     /** Reads struct input_event records: timeval (2 longs), type u16, code u16, value s32. */
@@ -730,7 +625,6 @@ class ShizukuInputUserService : Binder() {
         } finally {
             if (devices[path] === stream) {
                 devices.remove(path)
-                grabbedPaths.remove(path)
             }
             try { stream.close() } catch (_: Exception) { }
         }
@@ -781,15 +675,16 @@ class ShizukuInputUserService : Binder() {
         foregroundState = state
         val inFront = state != 0
         foreground = inFront
+        if (running && mouseManaged) {
+            if (inFront) applyAppPointerIcon(aim = mouseLookActive) else restoreSystemPointerIcon()
+        }
         if (wasInFront && !inFront) {
             // Left the game: drop every virtual finger so nothing stays pressed.
             synchronized(lock) {
                 bindings.values.flatten().forEach { it.control.reset() }
-                cursorFinger = -1
                 injector?.releaseAll()
             }
         }
-        refreshMouseGrab()
     }
 
     // ---------------------------------------------------------------- mouse FPS and own cursor
@@ -799,16 +694,12 @@ class ShizukuInputUserService : Binder() {
         synchronized(lock) {
             val touch = injector ?: return
             if (!touch.available) return
-            val look = lookControl ?: return
-            routeMouseMove(touch, look, deltaX, deltaY)
-        }
-    }
-
-    private fun routeMouseMove(touch: TouchInjector, look: Control, deltaX: Int, deltaY: Int) {
-        if (mouseLookActive) {
-            moveLook(touch, look, deltaX, deltaY)
-        } else if (grabbedPaths.isNotEmpty()) {
-            moveCursor(touch, deltaX, deltaY)
+            if (mouseLookActive) {
+                val look = lookControl ?: return
+                moveLook(touch, look, deltaX, deltaY)
+            } else {
+                moveCursor(touch, deltaX, deltaY)
+            }
         }
     }
 
@@ -838,41 +729,82 @@ class ShizukuInputUserService : Binder() {
     private fun moveCursor(touch: TouchInjector, deltaX: Int, deltaY: Int) {
         cursorX = (cursorX + deltaX * cursorSpeed).coerceIn(0f, (width - 1).toFloat())
         cursorY = (cursorY + deltaY * cursorSpeed).coerceIn(0f, (height - 1).toFloat())
-        if (cursorFinger >= 0) touch.move(cursorFinger, cursorX, cursorY)
     }
 
     private fun toggleMouseMode(touch: TouchInjector, control: Control) {
         mouseLookActive = !mouseLookActive
+        applyAppPointerIcon(aim = mouseLookActive)
         if (control.finger >= 0) touch.up(control.finger)
         control.finger = -1
-        if (cursorFinger >= 0) touch.up(cursorFinger)
-        cursorFinger = -1
         Log.i(tag, if (mouseLookActive) "Mouse FPS: mira ativa" else "Mouse FPS: cursor próprio")
     }
 
-    /** True while the mouse is grabbed and the player chose the app's own cursor. */
-    private fun cursorModeActive(): Boolean =
-        running && foreground && lookControl != null && !mouseLookActive && mouseCaptureComplete()
-
-    private fun mouseCaptureComplete(): Boolean =
-        knownMousePaths.isNotEmpty() && grabbedPaths.containsAll(knownMousePaths)
-
-    private fun cursorVisible(): Boolean = cursorModeActive()
-
-    /** In cursor mode the left button taps (and drags) wherever the app's own cursor is. */
-    private fun handleCursorClick(down: Boolean): Boolean {
-        val touch = injector ?: return false
-        if (!touch.available) return false
-        if (!down) {
-            if (cursorFinger < 0) return false
-            touch.up(cursorFinger)
-            cursorFinger = -1
-            return true
+    /** Replaces the Android glyph with an app-drawn PointerIcon through Shizuku. */
+    private fun applyAppPointerIcon(aim: Boolean) {
+        try {
+            val bitmap = Bitmap.createBitmap(48, 64, Bitmap.Config.ARGB_8888)
+            if (!aim) {
+                val canvas = Canvas(bitmap)
+                val path = Path().apply {
+                    moveTo(3f, 2f); lineTo(3f, 53f); lineTo(16f, 41f)
+                    lineTo(25f, 59f); lineTo(34f, 55f); lineTo(25f, 37f)
+                    lineTo(45f, 37f); close()
+                }
+                canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.BLACK; style = Paint.Style.STROKE; strokeWidth = 6f
+                })
+                canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+                canvas.drawPath(path, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = 0xFFE5484D.toInt(); style = Paint.Style.STROKE; strokeWidth = 2f
+                })
+            }
+            val icon = PointerIcon.create(bitmap, 3f, 2f)
+            val serviceManager = Class.forName("android.os.ServiceManager")
+            val binder = serviceManager.getDeclaredMethod("getService", String::class.java)
+                .apply { isAccessible = true }.invoke(null, "input") as? IBinder
+                ?: error("serviço de entrada do Android indisponível")
+            val stub = Class.forName("android.hardware.input.IInputManager\$Stub")
+            val manager = stub.getDeclaredMethod("asInterface", IBinder::class.java)
+                .apply { isAccessible = true }.invoke(null, binder)
+                ?: error("interface de entrada indisponível")
+            val setter = manager.javaClass.methods.firstOrNull {
+                it.name == "setCustomPointerIcon" && it.parameterTypes.size == 1
+            } ?: error("troca global de cursor indisponível neste Android")
+            setter.invoke(manager, icon)
+            customPointerApplied = true
+            pointerNote = if (aim) "seta do app oculta no modo mira" else "seta personalizada ativa"
+        } catch (error: Throwable) {
+            customPointerApplied = false
+            pointerNote = "não suportado: ${(error.cause ?: error).message ?: error.javaClass.simpleName}"
+            Log.w(tag, "Não foi possível trocar o ícone global do mouse", error)
         }
-        if (!cursorModeActive()) return false
-        if (cursorFinger < 0) cursorFinger = touch.down(cursorX, cursorY)
-        return true
     }
+
+    private fun restoreSystemPointerIcon() {
+        try {
+            val serviceManager = Class.forName("android.os.ServiceManager")
+            val binder = serviceManager.getDeclaredMethod("getService", String::class.java)
+                .apply { isAccessible = true }.invoke(null, "input") as? IBinder ?: return
+            val stub = Class.forName("android.hardware.input.IInputManager\$Stub")
+            val manager = stub.getDeclaredMethod("asInterface", IBinder::class.java)
+                .apply { isAccessible = true }.invoke(null, binder) ?: return
+            val reset = manager.javaClass.methods.firstOrNull {
+                it.name == "setPointerIconType" && it.parameterTypes.size == 1 &&
+                    it.parameterTypes[0] == Int::class.javaPrimitiveType
+            }
+            if (reset != null) reset.invoke(manager, PointerIcon.TYPE_ARROW)
+            customPointerApplied = false
+            pointerNote = "cursor padrão restaurado"
+        } catch (error: Throwable) {
+            Log.w(tag, "Não foi possível restaurar o cursor padrão", error)
+        }
+    }
+
+    /** True while the game is active and the player chose the app's own cursor. */
+    private fun cursorModeActive(): Boolean =
+        running && foreground && mouseManaged && !mouseLookActive
+
+    private fun cursorVisible(): Boolean = cursorModeActive() && !customPointerApplied
 
     private fun buildStatus(): String {
         val lines = ArrayList<String>()
@@ -885,18 +817,7 @@ class ShizukuInputUserService : Binder() {
         }
         val names = devices.keys.map { File(it).name }.sorted()
         lines += "Entrada lida: " + if (names.isEmpty()) "nenhum dispositivo" else names.joinToString()
-        lines += "Nós candidatos a mouse: $mouseCandidateSummary"
-        lines += "Mouse capturado (cursor próprio): " + when {
-            mouseCaptureComplete() -> "sim (${grabbedPaths.map { File(it).name }.sorted().joinToString()})"
-            grabbedPaths.isNotEmpty() -> "parcial (${grabbedPaths.map { File(it).name }.sorted().joinToString()} de ${knownMousePaths.map { File(it).name }.sorted().joinToString()})"
-            !mouseManaged -> "não (nenhum controle de mouse no keymap)"
-            foregroundState == 0 -> "aguardando o jogo ficar na frente"
-            else -> "não (${grabNote.ifEmpty { "captura ainda não foi confirmada" }})"
-        }
-        if (mouseGrabFailures.isNotEmpty()) {
-            lines += "Falhas ao capturar: " + mouseGrabFailures.entries.sortedBy { it.key }
-                .joinToString { "${File(it.key).name}: ${it.value}" }
-        }
+        lines += "Cursor próprio do app (sem capturar mouse Android): $pointerNote"
         lines += "Toques: " + (injector?.summary() ?: "motor parado")
         lines += "Teclas mapeadas: ${bindings.size}"
         lines += if (lastKeyAt == 0L) {
@@ -912,10 +833,6 @@ class ShizukuInputUserService : Binder() {
     private fun onKey(key: String, down: Boolean) {
         lastKeyText = "$key ${if (down) "↓" else "↑"}"
         lastKeyAt = SystemClock.elapsedRealtime()
-        if (key == "MOUSE_LEFT") {
-            val handled = synchronized(lock) { handleCursorClick(down) }
-            if (handled) return
-        }
         val list = bindings[key] ?: return
         if (!foreground && down) return
         list.forEach { binding ->
@@ -1157,7 +1074,6 @@ class ShizukuInputUserService : Binder() {
         /** How far (fraction of the short screen side) the camera drag goes before it restarts. */
         const val LOOK_RADIUS = 0.2f
         const val CURSOR_SPEED = 1.6f
-        const val EVIOCGRAB = 0x40044590
         const val UP = 0
         const val DOWN = 1
         const val LEFT = 2

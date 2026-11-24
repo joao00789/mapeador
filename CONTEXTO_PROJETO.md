@@ -34,16 +34,24 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 - O serviço Shizuku mantém UMA thread de "jogo na frente?" (dumpsys, ~1 s) que roda mesmo sem
   teclas mapeadas. O app consulta o estado (`queryState`, transação STATE) a cada 700 ms e
   esconde (visibility GONE) bolha, indicadores e editor quando o jogo não está na frente.
-- Mouse FPS (`MOUSE_LOOK`): se existir, o mouse é capturado (EVIOCGRAB via `libcore.io.Libcore.os.ioctlInt`)
-  só com o jogo confirmado na frente; ao sair, fecha o arquivo e o Android recebe o mouse de volta.
-  Tecla do controle (padrão `ALT_LEFT`) alterna MIRA (arrasto contínuo a partir do marcador,
-  reinicia na borda: `LOOK_RADIUS`) e CURSOR PRÓPRIO (`CursorView` no overlay; clique esquerdo = toque).
+- Mouse FPS (`MOUSE_LOOK`): o serviço lê eventos do hub USB via Shizuku sem `EVIOCGRAB`.
+  A tecla do controle (padrão `ALT_LEFT`) alterna MIRA (arrasto contínuo a partir do marcador,
+  reinicia na borda: `LOOK_RADIUS`) e CURSOR. O serviço tenta aplicar um `PointerIcon` próprio
+  globalmente em versões Android que ainda oferecem essa API oculta; quando indisponível, o app
+  desenha uma seta própria no overlay. O Android recente não oferece API pública para trocar a
+  seta global de outro app, então o fallback visual não consegue ocultar a seta nativa.
 - Menu da bolha → Diagnóstico (`buildStatus` no serviço Shizuku): usar para descobrir por que algo não funciona.
 
 ## Tamanhos (FloatingBubbleService.kt, companion)
 `KEY_SIZE_DP = 40`, `JOYSTICK_SIZE_DP = 88` (× raio 0.35–1.0), `JOYSTICK_MIN_DP = 56`.
 
 ## Histórico
+- 0.5.6 — Remove `EVIOCGRAB`; deixa os eventos do hub seguirem pelo Android e lê o mesmo fluxo
+  para teclado/mapeamento. Tenta aplicar um ícone PointerIcon próprio pelo Shizuku nas versões
+  que mantêm a API global antiga; exibe cursor desenhado pelo app como fallback. O código do
+  serviço Shizuku sobe para versão 7 para substituir instâncias antigas. Mantém a transição WASD
+  com tolerância de 80 ms. Não compilado nem testado em aparelho.
+- 0.5.5 — Joystick mantém o mesmo dedo por 80 ms ao ficar neutro para cobrir o intervalo entre key-up e key-down na troca rápida de WASD; preserva ordem de pressão sem reordenar teclas repetidas. EVIOCGRAB tenta sobrecargas com referência inteira, captura todos os nós EV_REL e mostra captura completa/parcial com falhas por nó. Cursor próprio fica como modo inicial depois de capturar o mouse.
 - 0.5.2 — CORRIGIDO o erro "Keymap parado: process name suffix must not be null": o
   `Shizuku.UserServiceArgs` agora define `.processNameSuffix("input")` (obrigatório no Shizuku API 13)
   e `.version(6)` para o Shizuku trocar o serviço antigo. `bindUserService` captura qualquer erro
@@ -65,6 +73,3 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 - O mouse USB continua clicando no jogo por conta própria (não há "grab" do dispositivo).
 - Macros, mira virtual, controle de recuo, scroll e modos de visão ainda não existem.
 - Se o Shizuku rodar como ADB shell e o fabricante bloquear `/dev/input`, o app avisa.
-- 0.5.3 — Captura de mouse: seleciona sobrecarga compatível de `ioctlInt` (int ou Int32Ref), reporta motivo se EVIOCGRAB falhar; velocidade e tamanho configuráveis para cursor próprio. Controles de toque ganham ação TOCAR/MANTER e atraso ajustável de 0–300 ms, salvo no mapping e aplicado pelo serviço. Joystick mantém pressionamento contínuo para não interromper o analógico. Não compilado/testado em aparelho.
-- 0.5.4 — Detecção do app em primeiro plano aceita `topResumedActivity` e `mResumedActivity` (Android recente); captura do mouse é iniciada também quando o formato do `dumpsys` é inconclusivo e liberada ao confirmar que o jogo saiu. Diagnóstico lista os nós de entrada candidatos a mouse e a falha específica do EVIOCGRAB.
-- 0.5.5 — Joystick mantém o mesmo dedo por 80 ms ao ficar neutro para cobrir o intervalo entre key-up e key-down na troca rápida de WASD; preserva ordem de pressão sem reordenar teclas repetidas. EVIOCGRAB tenta sobrecargas com referência inteira, captura todos os nós EV_REL e mostra captura completa/parcial com falhas por nó. Cursor próprio fica como modo inicial depois de capturar o mouse.
