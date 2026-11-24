@@ -57,6 +57,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -186,7 +187,6 @@ private fun MapeadorApp() {
 
     var page by remember { mutableStateOf(AppPage.GAMES) }
     var games by remember { mutableStateOf(loadGames(context)) }
-    var selectedGamePackage by remember { mutableStateOf(games.firstOrNull()?.packageName) }
     var showGamePicker by remember { mutableStateOf(false) }
     var components by remember { mutableStateOf(loadComponents(preferences)) }
     var captureTarget by remember { mutableStateOf<String?>(null) }
@@ -264,8 +264,6 @@ private fun MapeadorApp() {
             when (page) {
                 AppPage.GAMES -> GamesPage(
                     games = games,
-                    selectedPackage = selectedGamePackage,
-                    onSelectPackage = { selectedGamePackage = it },
                     onAddGame = { showGamePicker = true },
                     onRemoveGame = { game ->
                         games = games.filterNot { it.packageName == game.packageName }
@@ -439,7 +437,6 @@ private fun MapeadorApp() {
             onDismiss = { showGamePicker = false },
             onSelect = { game ->
                 games = listOf(game) + games.filterNot { it.packageName == game.packageName }
-                selectedGamePackage = game.packageName
                 saveGames(preferences, games)
                 Toast.makeText(context, "${game.label} adicionado à biblioteca.", Toast.LENGTH_SHORT).show()
                 showGamePicker = false
@@ -494,8 +491,6 @@ private fun StatusPill(label: String, connected: Boolean) {
 @Composable
 private fun GamesPage(
     games: List<GameApp>,
-    selectedPackage: String?,
-    onSelectPackage: (String) -> Unit,
     onAddGame: () -> Unit,
     onRemoveGame: (GameApp) -> Unit,
     onStartGame: (GameApp) -> Unit
@@ -513,12 +508,10 @@ private fun GamesPage(
         inputManager.registerInputDeviceListener(listener, Handler(Looper.getMainLooper()))
         onDispose { inputManager.unregisterInputDeviceListener(listener) }
     }
-    LaunchedEffect(games) {
-        if (games.none { it.packageName == selectedPackage }) {
-            onSelectPackage(games.firstOrNull()?.packageName.orEmpty())
-        }
+    val gamesListState = rememberLazyListState()
+    LaunchedEffect(games.firstOrNull()?.packageName) {
+        if (games.isNotEmpty()) gamesListState.animateScrollToItem(0)
     }
-    val selectedGame = games.firstOrNull { it.packageName == selectedPackage }
 
     Column(modifier = Modifier.fillMaxSize().padding(top = 10.dp, bottom = 10.dp)) {
         Row(
@@ -548,11 +541,18 @@ private fun GamesPage(
             StatusPill("Teclado", inputDevices.first)
         }
 
-        Box(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            contentAlignment = Alignment.Center
-        ) {
-            if (games.isEmpty()) {
+        Text(
+            "${games.size} ${if (games.size == 1) "jogo" else "jogos"} na biblioteca",
+            color = TextPrimary.copy(alpha = 0.68f),
+            fontSize = 12.sp,
+            modifier = Modifier.padding(top = 8.dp, bottom = 8.dp)
+        )
+
+        if (games.isEmpty()) {
+            Box(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Nenhum jogo ainda", color = TextPrimary, fontWeight = FontWeight.Bold)
                     Text(
@@ -561,60 +561,40 @@ private fun GamesPage(
                         modifier = Modifier.padding(top = 6.dp)
                     )
                 }
-            } else {
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    games.forEach { game ->
-                        val selected = game.packageName == selectedPackage
-                        Card(
-                            modifier = Modifier.width(150.dp).clickable { onSelectPackage(game.packageName) },
-                            colors = CardDefaults.cardColors(
-                                containerColor = if (selected) Panel else Color(0xFF2B0C10)
-                            ),
-                            shape = RoundedCornerShape(20.dp),
-                            border = if (selected) null else androidx.compose.foundation.BorderStroke(
-                                1.dp,
-                                Panel.copy(alpha = 0.6f)
-                            )
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                state = gamesListState,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                items(games, key = { it.packageName }) { game ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        shape = RoundedCornerShape(18.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth().padding(12.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                GameAppIcon(game, selected)
+                            GameAppIcon(game, selected = false)
+                            Column(Modifier.weight(1f)) {
+                                Text(game.label, color = TextPrimary, fontWeight = FontWeight.SemiBold, maxLines = 1)
                                 Text(
-                                    game.label,
-                                    color = if (selected) Color.White else TextPrimary,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    modifier = Modifier.padding(top = 8.dp)
+                                    game.packageName,
+                                    color = TextPrimary.copy(alpha = 0.62f),
+                                    fontSize = 10.sp,
+                                    maxLines = 1
                                 )
-                                TextButton(
-                                    onClick = { onRemoveGame(game) },
-                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp)
-                                ) {
-                                    Text(
-                                        "Remover",
-                                        color = if (selected) Color.White.copy(alpha = 0.78f) else Accent,
-                                        fontSize = 11.sp
-                                    )
-                                }
                             }
+                            Button(onClick = { onStartGame(game) }) { Text("Iniciar") }
+                            TextButton(onClick = { onRemoveGame(game) }) { Text("Remover") }
                         }
                     }
                 }
             }
-        }
-
-        Button(
-            onClick = { selectedGame?.let(onStartGame) },
-            enabled = selectedGame != null,
-            modifier = Modifier.align(Alignment.CenterHorizontally).width(260.dp)
-        ) {
-            Text(if (selectedGame == null) "Selecione um jogo" else "Iniciar jogo")
         }
     }
 }
