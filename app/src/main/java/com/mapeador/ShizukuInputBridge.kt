@@ -55,7 +55,7 @@ object ShizukuInputBridge {
         pendingCallbacks += callback
         val serviceArgs = Shizuku.UserServiceArgs(
             ComponentName(context, ShizukuInputUserService::class.java)
-        ).daemon(false).tag("nexoplay-input").version(2)
+        ).daemon(false).tag("nexoplay-input").version(3)
         val serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 remote = binder
@@ -296,6 +296,7 @@ class ShizukuInputUserService : Binder() {
     @Volatile private var foreground = true
     private var bindings = emptyMap<String, List<Binding>>()
     private var injector: TouchInjector? = null
+    @Volatile private var mouseLookActive = false
     private val devices = ConcurrentHashMap<String, FileInputStream>()
     private val swipeExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "NexoPlay-Swipe").apply { isDaemon = true }
@@ -344,6 +345,14 @@ class ShizukuInputUserService : Binder() {
 
         val touch = TouchInjector()
         injector = touch
+        mouseLookActive = bindings.values.flatten().any { it.control.type == "MOUSE_LOOK" }
+        if (mouseLookActive && touch.available) {
+            synchronized(lock) {
+                bindings.values.flatten().firstOrNull { it.control.type == "MOUSE_LOOK" }?.control?.let { control ->
+                    control.finger = touch.down(pixelX(control), pixelY(control))
+                }
+            }
+        }
         running = true
         foreground = true
         val runGeneration = ++generation
@@ -360,7 +369,11 @@ class ShizukuInputUserService : Binder() {
             opened == 0 -> "Keymap ativo, mas nenhum teclado ou mouse foi encontrado. Conecte o USB."
             !touch.available ->
                 "Keymap ativo em modo reduzido: só toques simples (este Android bloqueou a injeção avançada)."
-            else -> "Keymap ativo • $opened dispositivo(s) de entrada"
+            else -> {
+                val mouseLook = bindings.values.flatten().any { it.control.type == "MOUSE_LOOK" }
+                "Keymap ativo • $opened dispositivo(s) de entrada" +
+                    if (mouseLook) " • Mouse FPS ativo (tecla configurada suspende/retoma)" else ""
+            }
         }
     }
 
@@ -416,6 +429,8 @@ class ShizukuInputUserService : Binder() {
         val offset = if (is64) 16 else 8
         val buffer = ByteArray(size)
         val view = ByteBuffer.wrap(buffer).order(ByteOrder.nativeOrder())
+        var relativeX = 0
+        var relativeY = 0
         try {
             while (isRunning(runGeneration)) {
                 var filled = 0
@@ -427,9 +442,20 @@ class ShizukuInputUserService : Binder() {
                 val type = view.getShort(offset).toInt() and 0xFFFF
                 val code = view.getShort(offset + 2).toInt() and 0xFFFF
                 val value = view.getInt(offset + 4)
-                if (type == EV_KEY && (value == 0 || value == 1)) {
-                    val name = LINUX_KEYS[code] ?: continue
-                    onKey(name, value == 1)
+                when (type) {
+                    EV_KEY -> if (value == 0 || value == 1) {
+                        val name = LINUX_KEYS[code]
+                        if (name != null) onKey(name, value == 1)
+                    }
+                    EV_REL -> when (code) {
+                        REL_X -> relativeX += value
+                        REL_Y -> relativeY += value
+                    }
+                    EV_SYN -> if (code == SYN_REPORT) {
+                        if (relativeX != 0 || relativeY != 0) onMouseMove(relativeX, relativeY)
+                        relativeX = 0
+                        relativeY = 0
+                    }
                 }
             }
         } catch (error: Exception) {
@@ -462,10 +488,43 @@ class ShizukuInputUserService : Binder() {
                         bindings.values.flatten().forEach { it.control.reset() }
                         injector?.releaseAll()
                     }
+                } else if (!foreground && active && mouseLookActive) {
+                    synchronized(lock) {
+                        val touch = injector
+                        bindings.values.flatten().firstOrNull { it.control.type == "MOUSE_LOOK" }?.control?.let { control ->
+                            if (touch?.available == true && control.finger < 0) {
+                                control.finger = touch.down(pixelX(control), pixelY(control))
+                            }
+                        }
+                    }
                 }
                 foreground = active
             }
             try { Thread.sleep(1000) } catch (_: InterruptedException) { return }
+        }
+    }
+
+    // ---------------------------------------------------------------- mouse FPS
+
+    /** Maps relative mouse deltas to a short touch movement around the configured look anchor. */
+    private fun onMouseMove(deltaX: Int, deltaY: Int) {
+        if (!foreground || !mouseLookActive || (deltaX == 0 && deltaY == 0)) return
+        synchronized(lock) {
+            val touch = injector ?: return
+            if (!touch.available) return
+            val control = bindings.values.flatten().firstOrNull { it.control.type == "MOUSE_LOOK" }?.control ?: return
+            if (control.finger < 0) control.finger = touch.down(pixelX(control), pixelY(control))
+            if (control.finger < 0) return
+            val anchorX = pixelX(control)
+            val anchorY = pixelY(control)
+            val movedX = (anchorX + deltaX * control.sensitivityX * MOUSE_LOOK_SCALE)
+                .coerceIn(0f, (width - 1).toFloat())
+            val movedY = (anchorY + deltaY * control.sensitivityY * MOUSE_LOOK_SCALE)
+                .coerceIn(0f, (height - 1).toFloat())
+            // A short relative swipe followed by recentering keeps the virtual finger in the
+            // configured look zone instead of slowly drifting across the screen.
+            touch.move(control.finger, movedX, movedY)
+            touch.move(control.finger, anchorX, anchorY)
         }
     }
 
@@ -479,6 +538,16 @@ class ShizukuInputUserService : Binder() {
             list.forEach { binding ->
                 val control = binding.control
                 when (control.type) {
+                    "MOUSE_LOOK" -> if (down) {
+                        mouseLookActive = !mouseLookActive
+                        if (mouseLookActive && touch.available) {
+                            if (control.finger < 0) control.finger = touch.down(pixelX(control), pixelY(control))
+                        } else {
+                            if (control.finger >= 0) touch.up(control.finger)
+                            control.finger = -1
+                        }
+                        Log.i(tag, "Mouse FPS ${if (mouseLookActive) "ativado" else "suspenso"}")
+                    }
                     "TOUCH", "MOUSE_PICK" -> if (down) pressTouch(touch, control) else releaseTouch(touch, control)
                     "SWIPE" -> if (down) swipe(touch, control)
                     "JOYSTICK" -> moveJoystick(touch, control, binding.direction, down)
@@ -592,7 +661,9 @@ class ShizukuInputUserService : Binder() {
                 item.optDouble("x", 0.5).toFloat().coerceIn(0f, 1f),
                 item.optDouble("y", 0.5).toFloat().coerceIn(0f, 1f),
                 item.optDouble("rangePx", 0.0).toFloat().takeIf { it > 1f } ?: DEFAULT_JOYSTICK_RANGE,
-                item.optBoolean("stopOnOpposite", true)
+                item.optBoolean("stopOnOpposite", true),
+                item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 4f),
+                item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 4f)
             )
             val rawKey = item.optString("key")
             if (type == "JOYSTICK") {
@@ -631,7 +702,9 @@ class ShizukuInputUserService : Binder() {
         val x: Float,
         val y: Float,
         val range: Float,
-        val stopOnOpposite: Boolean
+        val stopOnOpposite: Boolean,
+        val sensitivityX: Float,
+        val sensitivityY: Float
     ) {
         var finger = -1
         val held = ArrayList<Int>()
@@ -649,14 +722,20 @@ class ShizukuInputUserService : Binder() {
         const val DESCRIPTOR = "com.mapeador.IShizukuInput"
         const val TRANSACTION_START = IBinder.FIRST_CALL_TRANSACTION
         const val TRANSACTION_STOP = IBinder.FIRST_CALL_TRANSACTION + 1
+        const val EV_SYN = 0
         const val EV_KEY = 1
+        const val EV_REL = 2
+        const val SYN_REPORT = 0
+        const val REL_X = 0
+        const val REL_Y = 1
+        const val MOUSE_LOOK_SCALE = 1.0f
         const val UP = 0
         const val DOWN = 1
         const val LEFT = 2
         const val RIGHT = 3
         const val SWIPE_DISTANCE = 96f
         const val DEFAULT_JOYSTICK_RANGE = 120f
-        val SUPPORTED_TYPES = setOf("TOUCH", "SWIPE", "MOUSE_PICK", "JOYSTICK")
+        val SUPPORTED_TYPES = setOf("TOUCH", "SWIPE", "MOUSE_PICK", "JOYSTICK", "MOUSE_LOOK")
 
         /**
          * Linux input codes (input-event-codes.h) -> the Android key names the editor saves

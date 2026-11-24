@@ -20,8 +20,15 @@ Acessibilidade. Se o Shizuku estiver rodando como ADB shell, o acesso aos dispos
 de entrada depende da versão e das permissões do fabricante.
 
 A biblioteca mostra os ícones dos apps instalados. No editor, Toque, Mouse Pick,
-Deslizar e Joystick (WASD ou Setas) são executados; macros, scroll e modos de visão
-ainda não executam ações no jogo.
+Deslizar, Joystick (WASD ou Setas) e Mouse FPS são executados. O Mouse FPS lê os deltas
+REL_X/REL_Y do mouse e os converte em movimentos curtos de toque na posição configurada.
+A tecla atribuída ao componente Mouse FPS alterna entre mira ativa e mouse suspenso.
+Ajuste a sensibilidade horizontal e vertical tocando no marcador Mouse FPS no editor.
+
+Limitação do Android: esta implementação converte movimento do mouse em gestos de toque,
+mas não consegue ocultar globalmente o ponteiro físico do Android em todos os jogos. A
+captura exclusiva/ocultação do cursor depende de suporte de captura de ponteiro no próprio
+jogo ou de integração privilegiada específica do fabricante.
 
 ## Gerar o APK
 
@@ -61,3 +68,14 @@ O APK desta versão é de depuração e não está assinado para distribuição 
 - Posições calculadas com o tamanho real da tela (inclusive sob o notch) e refeitas ao girar.
 - O motor fica pausado no editor (antes reiniciava a cada ajuste e disparava toques).
 - O app avisa na tela o estado do keymap (ativo, sem acesso a /dev/input, sem Shizuku...).
+
+
+## Novidades da 0.4.0
+
+- Novo componente **Mouse FPS** para converter movimento relativo do mouse (REL_X/REL_Y)
+  em pequenos movimentos de toque na área de mira configurada.
+- Tecla configurável no componente alterna entre Mouse FPS ativo e suspenso; ao suspender,
+  o toque virtual é liberado.
+- Sensibilidade horizontal e vertical configuráveis no editor.
+- Marcador de Mouse FPS aparece apenas no editor, não sobre o jogo.
+- Serviço Shizuku atualizado para a nova versão do motor.

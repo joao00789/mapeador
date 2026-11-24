@@ -291,6 +291,10 @@ class FloatingBubbleService : Service() {
             if (control.type == "JOYSTICK") {
                 item.put("rangePx", (controlSizePx(control) / 2f * 0.88f).toDouble())
             }
+            if (control.type == "MOUSE_LOOK") {
+                item.put("sensitivityX", control.sensitivityX.toDouble())
+                item.put("sensitivityY", control.sensitivityY.toDouble())
+            }
             array.put(item)
         }
         return array.toString()
@@ -985,6 +989,10 @@ class FloatingBubbleService : Service() {
         val root = editor ?: return
         if (controlSettings != null) return
         val control = readControls().firstOrNull { it.id == id } ?: return
+        if (control.type == "MOUSE_LOOK") {
+            showMouseLookSettings(id, control)
+            return
+        }
         if (control.type != "JOYSTICK") return
 
         val scrim = FrameLayout(this).apply {
@@ -1110,6 +1118,81 @@ class FloatingBubbleService : Service() {
                 FrameLayout.LayoutParams.MATCH_PARENT
             )
         )
+        controlSettings = scrim
+    }
+
+    private fun showMouseLookSettings(id: String, control: OverlayControl) {
+        val root = editor ?: return
+        val scrim = FrameLayout(this).apply {
+            setBackgroundColor(0x99080B12.toInt())
+            setOnClickListener { closeControlSettings() }
+        }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            background = roundedBackground(0xFF4A1218.toInt(), 0xFFE5484D.toInt(), dp(20))
+            isClickable = true
+            setOnClickListener { }
+            elevation = dp(16).toFloat()
+        }
+        card.addView(TextView(this).apply {
+            text = "Mouse FPS"
+            textSize = 19f
+            setTextColor(Color.WHITE)
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+        })
+        card.addView(TextView(this).apply {
+            text = "Tecla ${keyLabel(control.key)} alterna entre mira ativa e mouse suspenso. Arraste o marcador no editor para posicionar a área de mira."
+            textSize = 12f
+            setTextColor(0xFFFFE3E4.toInt())
+            setPadding(0, dp(6), 0, dp(12))
+        })
+        fun sensitivitySlider(axis: String, value: Float, update: (Float) -> Unit) {
+            val label = TextView(this).apply {
+                text = "Sensibilidade $axis: ${"%.1f".format(java.util.Locale.US, value)}x"
+                textSize = 13f
+                setTextColor(Color.WHITE)
+            }
+            card.addView(label)
+            card.addView(SeekBar(this).apply {
+                max = 39
+                progress = ((value - 0.1f) * 10f).toInt().coerceIn(0, 39)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                        val next = 0.1f + progress / 10f
+                        label.text = "Sensibilidade $axis: ${"%.1f".format(java.util.Locale.US, next)}x"
+                        update(next)
+                    }
+                    override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                    override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+                })
+            })
+        }
+        sensitivitySlider("horizontal", control.sensitivityX) { next ->
+            writeControls(readControls().map { if (it.id == id) it.copy(sensitivityX = next) else it })
+        }
+        sensitivitySlider("vertical", control.sensitivityY) { next ->
+            writeControls(readControls().map { if (it.id == id) it.copy(sensitivityY = next) else it })
+        }
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(actionButton("Alterar tecla") {
+                closeControlSettings()
+                beginCapture(id)
+            }, LinearLayout.LayoutParams(0, dp(44), 1f))
+            addView(actionButton("Concluir") { closeControlSettings() },
+                LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) })
+        }
+        card.addView(buttons, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(12) })
+        scrim.addView(card, FrameLayout.LayoutParams(
+            (screenWidth() - dp(36)).coerceAtMost(dp(380)),
+            FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.CENTER
+        ))
+        root.addView(scrim, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
         controlSettings = scrim
     }
 
@@ -1261,8 +1344,8 @@ class FloatingBubbleService : Service() {
                 cursorY = item.optDouble("cursorY", 0.5).toFloat().coerceIn(0f, 1f),
                 preventViewFreeze = item.optBoolean("preventViewFreeze", true),
                 controllerAcceleration = item.optDouble("controllerAcceleration", 0.5).toFloat().coerceIn(0f, 1f),
-                sensitivityX = item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 2f),
-                sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 2f)
+                sensitivityX = item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 4f),
+                sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 4f)
             )
         }
     }
@@ -1270,13 +1353,17 @@ class FloatingBubbleService : Service() {
     private fun addControl(type: String) {
         val root = editor ?: return
         val items = readControls()
+        if (type == "MOUSE_LOOK" && items.any { it.type == "MOUSE_LOOK" }) {
+            Toast.makeText(this, "Já existe um controle Mouse FPS. Configure o marcador atual.", Toast.LENGTH_SHORT).show()
+            return
+        }
         val offset = (items.size % 5) * 0.1f
         val control = OverlayControl(
             id = UUID.randomUUID().toString(),
             type = type,
             key = if (type == "JOYSTICK") "WASD" else "Tecla?",
-            x = 0.28f + offset,
-            y = 0.56f + (items.size % 3) * 0.08f
+            x = if (type == "MOUSE_LOOK") 0.76f else 0.28f + offset,
+            y = if (type == "MOUSE_LOOK") 0.56f else 0.56f + (items.size % 3) * 0.08f
         )
         writeControls(items + control)
         renderControls(root)
@@ -1307,6 +1394,7 @@ class FloatingBubbleService : Service() {
         val displayWidth = screenWidth()
         val displayHeight = screenHeight()
         readControls().forEach { control ->
+            if (control.type == "MOUSE_LOOK" && !inEditor) return@forEach
             val label = componentLabel(control.type)
             val isJoystick = control.type == "JOYSTICK"
             val view = if (isJoystick) {
@@ -1460,8 +1548,8 @@ class FloatingBubbleService : Service() {
                     cursorY = item.optDouble("cursorY", 0.5).toFloat().coerceIn(0f, 1f),
                     preventViewFreeze = item.optBoolean("preventViewFreeze", true),
                     controllerAcceleration = item.optDouble("controllerAcceleration", 0.5).toFloat().coerceIn(0f, 1f),
-                    sensitivityX = item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 2f),
-                    sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 2f)
+                    sensitivityX = item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 4f),
+                    sensitivityY = item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 4f)
                 )
             }
         } catch (error: JSONException) {
@@ -1568,7 +1656,7 @@ class FloatingBubbleService : Service() {
                     handler.removeCallbacks(removeRunnable)
                     if (event.actionMasked == MotionEvent.ACTION_UP && !moved && !longPressed) {
                         val control = readControls().firstOrNull { it.id == id }
-                        if (control?.type == "JOYSTICK") showControlSettings(id) else beginCapture(id)
+                        if (control?.type == "JOYSTICK" || control?.type == "MOUSE_LOOK") showControlSettings(id) else beginCapture(id)
                     } else if (moved) {
                         updateControlPosition(
                             id,
@@ -1723,7 +1811,8 @@ class FloatingBubbleService : Service() {
             Triple("TOUCH", "Toque", "●"),
             Triple("SWIPE", "Deslizar", "↗"),
             Triple("MOUSE_PICK", "Seleção do Mouse", "⊙"),
-            Triple("JOYSTICK", "Joystick", "✥")
+            Triple("JOYSTICK", "Joystick", "✥"),
+            Triple("MOUSE_LOOK", "Mouse FPS", "⌖")
         )
     }
 }
