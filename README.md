@@ -43,6 +43,15 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
 
+## Novidades da 0.6.1
+
+- Separa o modo cursor (mouse suspenso) do modo mira: o cursor próprio e os cliques de navegação
+  só ficam ativos no modo cursor; na mira, os deltas controlam somente a câmera.
+- Abrir o painel lateral suspende a mira automaticamente para permitir navegar com o mouse;
+  fechar o painel restaura o modo anterior.
+- Cancela o toque da mira ao recentralizar ou alternar modos, evitando que a soltura seja
+  interpretada como clique; também limpa deltas pendentes para evitar saltos.
+
 ## Novidades da 0.6.0
 
 - A seta do app aparece ao abrir um jogo mesmo sem adicionar Mouse FPS; quando a captura está

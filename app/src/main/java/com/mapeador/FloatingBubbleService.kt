@@ -232,6 +232,7 @@ class FloatingBubbleService : Service() {
     private var captureTarget: String? = null
     private var activeGamePackage: String? = null
     private var lastEngineState: ShizukuInputBridge.EngineState? = null
+    private var menuPreviousMouseLookActive: Boolean? = null
     private val handler = Handler(Looper.getMainLooper())
     /** False while the game is not in front: the bubble and the key indicators are hidden. */
     private var overlaysVisible = true
@@ -672,6 +673,8 @@ class FloatingBubbleService : Service() {
     private fun showMenu() {
         if (menu != null || editor != null) return
         val manager = windowManager ?: return
+        val previousMouseLookActive =
+            ShizukuInputBridge.queryState()?.mouseLookActive ?: lastEngineState?.mouseLookActive ?: true
         val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
         val panelWidth = (screenWidth() * 0.42f).toInt()
             .coerceIn(dp(260), dp(420))
@@ -786,7 +789,9 @@ class FloatingBubbleService : Service() {
         try {
             manager.addView(scrim, params)
             menu = scrim
-            lastEngineState?.let(::updateCursor)
+            menuPreviousMouseLookActive = previousMouseLookActive
+            ShizukuInputBridge.setMouseLookActive(false)
+            pollEngineState()
         } catch (error: WindowManager.BadTokenException) {
             Log.e(TAG, "Não foi possível abrir o menu flutuante", error)
             Toast.makeText(this, "Não foi possível abrir o menu flutuante.", Toast.LENGTH_SHORT).show()
@@ -1829,10 +1834,15 @@ class FloatingBubbleService : Service() {
     }
 
     private fun closeMenu() {
+        val wasOpen = menu != null
         removeOverlay(menu)
         menu = null
         menuParams = null
-        lastEngineState?.let(::updateCursor)
+        if (wasOpen) {
+            menuPreviousMouseLookActive?.let(ShizukuInputBridge::setMouseLookActive)
+            menuPreviousMouseLookActive = null
+            pollEngineState()
+        }
     }
 
     private fun removeControl(id: String) {

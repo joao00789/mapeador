@@ -33,6 +33,7 @@ object ShizukuInputBridge {
     private const val TRANSACTION_STOP = IBinder.FIRST_CALL_TRANSACTION + 1
     private const val TRANSACTION_STATE = IBinder.FIRST_CALL_TRANSACTION + 2
     private const val TRANSACTION_STATUS = IBinder.FIRST_CALL_TRANSACTION + 3
+    private const val TRANSACTION_MOUSE_MODE = IBinder.FIRST_CALL_TRANSACTION + 4
     private val BIND_TIMEOUT_TOKEN = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var remote: IBinder? = null
@@ -72,7 +73,7 @@ object ShizukuInputBridge {
         ).daemon(false)
             .processNameSuffix("input")
             .tag("nexoplay-input")
-            .version(10)
+            .version(11)
         val serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 remote = binder
@@ -174,13 +175,18 @@ object ShizukuInputBridge {
         transact(TRANSACTION_STOP, { parcel -> parcel.writeInt(if (full) 1 else 0) }, { })
     }
 
+    fun setMouseLookActive(active: Boolean) {
+        transact(TRANSACTION_MOUSE_MODE, { parcel -> parcel.writeInt(if (active) 1 else 0) }, { })
+    }
+
     /** Live state of the engine: is the game in front, and where is the app's own mouse cursor. */
     class EngineState(
         /** 1 = game in front, 0 = not in front, 2 = could not tell, -1 = not watching yet. */
         val foreground: Int,
         val cursorVisible: Boolean,
         val cursorX: Int,
-        val cursorY: Int
+        val cursorY: Int,
+        val mouseLookActive: Boolean
     )
 
     fun queryState(): EngineState? = transact(
@@ -191,7 +197,8 @@ object ShizukuInputBridge {
             val cursorVisible = reply.readInt() == 1
             val cursorX = reply.readInt()
             val cursorY = reply.readInt()
-            EngineState(foreground, cursorVisible, cursorX, cursorY)
+            val mouseLookActive = reply.readInt() == 1
+            EngineState(foreground, cursorVisible, cursorX, cursorY, mouseLookActive)
         }
     )
 
@@ -338,6 +345,22 @@ private class TouchInjector {
                     send(MotionEvent.ACTION_UP)
                 } else {
                     send(MotionEvent.ACTION_POINTER_UP or (index shl MotionEvent.ACTION_POINTER_INDEX_SHIFT))
+                }
+                fingers.removeAt(index)
+            }
+        }
+    }
+
+    fun cancel(id: Int) {
+        synchronized(lock) {
+            val index = fingers.indexOfFirst { it.id == id }
+            if (index < 0) return
+            if (fingers.size == 1) {
+                if (!send(MotionEvent.ACTION_CANCEL)) send(MotionEvent.ACTION_UP)
+                fingers.removeAt(index)
+            } else {
+                if (!send(MotionEvent.ACTION_POINTER_UP or (index shl MotionEvent.ACTION_POINTER_INDEX_SHIFT))) {
+                    return
                 }
                 fingers.removeAt(index)
             }
@@ -498,12 +521,16 @@ class ShizukuInputUserService : Binder() {
                 reply?.writeInt(if (cursorVisible()) 1 else 0)
                 reply?.writeInt(cursorX.toInt())
                 reply?.writeInt(cursorY.toInt())
+                reply?.writeInt(if (mouseLookActive) 1 else 0)
                 return true
             }
             TRANSACTION_STATUS -> {
                 reply?.writeNoException()
                 reply?.writeString(buildStatus())
                 return true
+            }
+            TRANSACTION_MOUSE_MODE -> {
+                setMouseLookActive(data.readInt() == 1)
             }
             else -> return super.onTransact(code, data, reply, flags)
         }
@@ -828,13 +855,13 @@ class ShizukuInputUserService : Binder() {
             mouseMotionFlushScheduled = false
             if (!foreground || !mouseManaged || (deltaX == 0f && deltaY == 0f)) return
 
-            val touch = injector ?: return
-            if (!touch.available) return
             if (mouseLookActive) {
+                val touch = injector?.takeIf { it.available } ?: return
                 lookControl?.let { moveLook(touch, it, deltaX, deltaY) }
+            } else {
+                moveCursor(deltaX, deltaY)
+                if (cursorFinger >= 0) injector?.move(cursorFinger, cursorX, cursorY)
             }
-            moveCursor(touch, deltaX, deltaY)
-            if (!mouseLookActive && cursorFinger >= 0) touch.move(cursorFinger, cursorX, cursorY)
         }
     }
 
@@ -860,7 +887,7 @@ class ShizukuInputUserService : Binder() {
             touch.move(control.finger, control.lookX, control.lookY)
             if (fraction >= 1f) return
 
-            touch.up(control.finger)
+            touch.cancel(control.finger)
             control.finger = touch.down(anchorX, anchorY)
             control.lookX = anchorX
             control.lookY = anchorY
@@ -876,23 +903,37 @@ class ShizukuInputUserService : Binder() {
         return ((boundary - position) / delta).coerceIn(0f, 1f)
     }
 
-    private fun moveCursor(touch: TouchInjector, deltaX: Float, deltaY: Float) {
+    private fun moveCursor(deltaX: Float, deltaY: Float) {
         cursorX = (cursorX + deltaX * cursorSpeed).coerceIn(0f, (width - 1).toFloat())
         cursorY = (cursorY + deltaY * cursorSpeed).coerceIn(0f, (height - 1).toFloat())
     }
 
-    private fun toggleMouseMode(touch: TouchInjector, control: Control) {
-        mouseLookActive = !mouseLookActive
-        if (control.finger >= 0) touch.up(control.finger)
-        control.finger = -1
-        if (cursorFinger >= 0) touch.up(cursorFinger)
-        cursorFinger = -1
-        Log.i(tag, if (mouseLookActive) "Mouse FPS: mira ativa" else "Mouse FPS: cursor próprio")
+    private fun setMouseLookActive(active: Boolean) {
+        synchronized(lock) {
+            if (!running || (active && lookControl == null) || mouseLookActive == active) return
+            val touch = injector
+            lookControl?.let { control ->
+                if (control.finger >= 0) touch?.cancel(control.finger)
+                control.finger = -1
+                control.lookX = 0f
+                control.lookY = 0f
+            }
+            if (cursorFinger >= 0) touch?.cancel(cursorFinger)
+            cursorFinger = -1
+            pendingMouseDeltaX = 0.0
+            pendingMouseDeltaY = 0.0
+            mouseLookActive = active
+            Log.i(tag, if (active) "Mouse FPS: mira ativa" else "Mouse FPS: cursor próprio")
+        }
     }
 
-    /** True while the game is active and the player chose the app's own cursor. */
+    private fun toggleMouseMode() {
+        setMouseLookActive(!mouseLookActive)
+    }
+
+    /** The app cursor is only shown while FPS camera control is suspended. */
     private fun cursorVisible(): Boolean =
-        running && foreground && mouseManaged && mouseCaptureComplete()
+        running && foreground && mouseManaged && !mouseLookActive && mouseCaptureComplete()
 
     private fun mouseCaptureComplete(): Boolean =
         knownMousePaths.isNotEmpty() && grabbedPaths.containsAll(knownMousePaths)
@@ -944,9 +985,7 @@ class ShizukuInputUserService : Binder() {
         lastKeyAt = SystemClock.elapsedRealtime()
         if (key.startsWith("MOUSE_") && !capturedMouseInput) return
         val mouseLookShortcut = bindings[key].orEmpty().any { it.control.type == "MOUSE_LOOK" }
-        if (key == "MOUSE_LEFT" && !mouseLookActive && !mouseLookShortcut &&
-            (lookControl != null || bindings[key].isNullOrEmpty())
-        ) {
+        if (key == "MOUSE_LEFT" && !mouseLookActive && !mouseLookShortcut) {
             synchronized(lock) {
                 val touch = injector ?: return
                 if (down) {
@@ -982,7 +1021,7 @@ class ShizukuInputUserService : Binder() {
                 return
             }
             when (control.type) {
-                "MOUSE_LOOK" -> if (down) toggleMouseMode(touch, control)
+                "MOUSE_LOOK" -> if (down) toggleMouseMode()
                 "TOUCH", "MOUSE_PICK" -> if (down) pressTouch(touch, control) else releaseTouch(touch, control)
                 "SWIPE" -> if (down) swipe(touch, control)
                 "JOYSTICK" -> moveJoystick(touch, control, binding.direction, down)
@@ -1189,6 +1228,7 @@ class ShizukuInputUserService : Binder() {
         const val TRANSACTION_STOP = IBinder.FIRST_CALL_TRANSACTION + 1
         const val TRANSACTION_STATE = IBinder.FIRST_CALL_TRANSACTION + 2
         const val TRANSACTION_STATUS = IBinder.FIRST_CALL_TRANSACTION + 3
+        const val TRANSACTION_MOUSE_MODE = IBinder.FIRST_CALL_TRANSACTION + 4
         const val EV_SYN = 0
         const val EV_KEY = 1
         const val EV_REL = 2
