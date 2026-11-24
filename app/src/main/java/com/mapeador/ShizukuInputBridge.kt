@@ -31,18 +31,25 @@ object ShizukuInputBridge {
     private const val TRANSACTION_STOP = IBinder.FIRST_CALL_TRANSACTION + 1
     private const val TRANSACTION_STATE = IBinder.FIRST_CALL_TRANSACTION + 2
     private const val TRANSACTION_STATUS = IBinder.FIRST_CALL_TRANSACTION + 3
+    private val BIND_TIMEOUT_TOKEN = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var remote: IBinder? = null
     private var connection: ServiceConnection? = null
     private val pendingCallbacks = mutableListOf<(Boolean, String) -> Unit>()
 
+    @Volatile private var lastError = ""
+    private var lastToastText = ""
+    private var lastToastAt = 0L
+
     fun bind(context: Context, callback: (Boolean, String) -> Unit) {
         if (!Shizuku.pingBinder()) {
-            callback(false, "Shizuku não está iniciado")
+            lastError = "Shizuku não está iniciado"
+            callback(false, lastError)
             return
         }
         if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            callback(false, "B13 MAUSE PRO ainda não foi autorizado no Shizuku")
+            lastError = "B13 MAUSE PRO ainda não foi autorizado no Shizuku"
+            callback(false, lastError)
             return
         }
         remote?.takeIf { it.isBinderAlive }?.let {
@@ -51,23 +58,30 @@ object ShizukuInputBridge {
         }
         remote = null
         if (connection != null) {
+            // A connection is already being opened; the timeout below fails it if it never arrives.
             pendingCallbacks += callback
             return
         }
         pendingCallbacks += callback
         val serviceArgs = Shizuku.UserServiceArgs(
             ComponentName(context, ShizukuInputUserService::class.java)
-        ).daemon(false).tag("nexoplay-input").version(4)
+        ).daemon(false).tag("nexoplay-input").version(5)
         val serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 remote = binder
                 connection = this
                 mainHandler.post {
+                    mainHandler.removeCallbacksAndMessages(BIND_TIMEOUT_TOKEN)
                     val callbacks = pendingCallbacks.toList()
                     pendingCallbacks.clear()
                     callbacks.forEach {
-                        if (binder == null) it(false, "O serviço Shizuku não respondeu")
-                        else it(true, serverIdentity())
+                        if (binder == null) {
+                            lastError = "O serviço Shizuku não respondeu"
+                            it(false, lastError)
+                        } else {
+                            lastError = ""
+                            it(true, serverIdentity())
+                        }
                     }
                 }
             }
@@ -82,9 +96,42 @@ object ShizukuInputBridge {
             Shizuku.bindUserService(serviceArgs, serviceConnection)
         } catch (error: RuntimeException) {
             connection = null
-            val message = error.message ?: "Não foi possível iniciar o serviço Shizuku"
-            pendingCallbacks.toList().also { pendingCallbacks.clear() }.forEach { it(false, message) }
+            lastError = error.message ?: "Não foi possível iniciar o serviço Shizuku"
+            pendingCallbacks.toList().also { pendingCallbacks.clear() }.forEach { it(false, lastError) }
+            return
         }
+        // If the Shizuku side never starts the service (it crashed while starting, for example)
+        // nothing would ever answer: give up after a while so the next attempt can try again.
+        mainHandler.postAtTime({
+            if (remote == null && connection === serviceConnection) {
+                lastError = "O serviço dentro do Shizuku não iniciou em 8 s " +
+                    "(reinicie o Shizuku e abra o jogo de novo)"
+                try {
+                    Shizuku.unbindUserService(serviceArgs, serviceConnection, true)
+                } catch (error: Throwable) {
+                    Log.w(TAG, "Não foi possível desfazer o bind", error)
+                }
+                connection = null
+                pendingCallbacks.toList().also { pendingCallbacks.clear() }.forEach { it(false, lastError) }
+            }
+        }, BIND_TIMEOUT_TOKEN, SystemClock.uptimeMillis() + 8000)
+    }
+
+    /** Explains, from the app side, why the engine does not answer (used by the diagnostics card). */
+    fun connectionReport(): String {
+        val running = try { Shizuku.pingBinder() } catch (_: Throwable) { false }
+        val granted = running && try {
+            Shizuku.checkSelfPermission() == android.content.pm.PackageManager.PERMISSION_GRANTED
+        } catch (_: Throwable) {
+            false
+        }
+        return listOf(
+            "O serviço do Shizuku não respondeu:",
+            "• Shizuku iniciado: " + if (running) "sim" else "NÃO",
+            "• Este app autorizado no Shizuku: " + if (granted) "sim" else "NÃO",
+            "• Serviço conectado: " + if (remote?.isBinderAlive == true) "sim" else "NÃO",
+            "• Último erro: " + lastError.ifEmpty { "nenhum" }
+        ).joinToString("\n")
     }
 
     /**
@@ -144,7 +191,14 @@ object ShizukuInputBridge {
     fun diagnostics(): String? = transact(TRANSACTION_STATUS, { }, { reply -> reply.readString().orEmpty() })
 
     private fun toast(context: Context, message: String) {
-        mainHandler.post { Toast.makeText(context, message, Toast.LENGTH_LONG).show() }
+        mainHandler.post {
+            // The panel retries by itself; do not repeat the same message over and over.
+            val now = SystemClock.elapsedRealtime()
+            if (message == lastToastText && now - lastToastAt < 30_000) return@post
+            lastToastText = message
+            lastToastAt = now
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun serverIdentity(): String = when (Shizuku.getUid()) {

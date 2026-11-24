@@ -91,3 +91,12 @@ O APK desta versão é de depuração e não está assinado para distribuição 
 - Mouse próprio: captura do mouse (EVIOCGRAB) com seta própria desenhada pelo app.
 - Novo item **Diagnóstico** no menu da bolha: mostra Shizuku, jogo na frente, dispositivos lidos,
   mouse capturado, toques enviados e a última tecla recebida (teste em tempo real).
+
+## Novidades da 0.5.1
+
+- A borda da bolha mostra o estado do motor: **verde** = conectado e jogo na frente, **amarelo** =
+  conectado mas não deu para saber se o jogo está na frente, **vermelho** = o motor do Shizuku não responde.
+- Se o motor não responde, o app tenta reconectar sozinho (a cada ~6 s) e avisa o motivo.
+- O bind do serviço Shizuku agora tem limite de 8 s (antes podia ficar pendurado para sempre, sem aviso).
+- O Diagnóstico mostra a versão do app e, se o motor não responde, um relatório do Shizuku
+  (iniciado? autorizado? serviço conectado? último erro).

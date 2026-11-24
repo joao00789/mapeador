@@ -44,6 +44,9 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 `KEY_SIZE_DP = 40`, `JOYSTICK_SIZE_DP = 88` (× raio 0.35–1.0), `JOYSTICK_MIN_DP = 56`.
 
 ## Histórico
+- 0.5.1 — Bolha com borda de status (verde/amarelo/vermelho); reconexão automática; timeout de 8 s no
+  bind do Shizuku (antes um serviço que não iniciava deixava tudo mudo); Diagnóstico com versão e
+  relatório de conexão. Causa suspeita do "nada funciona": serviço no Shizuku não iniciando.
 - 0.5.0 — Bolha/indicadores só com o jogo na frente; Mouse FPS corrigido (arrasto contínuo);
   mouse capturado + cursor próprio; Diagnóstico no menu. NÃO compilado/testado em aparelho.
 - 0.4.0 — Componente Mouse FPS (REL_X/REL_Y → toque), sensibilidade X/Y no editor.

@@ -231,6 +231,8 @@ class FloatingBubbleService : Service() {
     private var overlaysVisible = true
     private var cursorView: View? = null
     private var cursorShown = false
+    private var missedPolls = 0
+    private var lastReconnectAt = 0L
     private var diagnosticsView: View? = null
     private var diagnosticsText: TextView? = null
     private val statePoller = object : Runnable {
@@ -242,8 +244,8 @@ class FloatingBubbleService : Service() {
     private val diagnosticsTicker = object : Runnable {
         override fun run() {
             val text = diagnosticsText ?: return
-            text.text = ShizukuInputBridge.diagnostics()
-                ?: "O serviço Shizuku não respondeu. Ele está iniciado e este app está autorizado?"
+            text.text = appVersionLine() + "\n" +
+                (ShizukuInputBridge.diagnostics() ?: ShizukuInputBridge.connectionReport())
             handler.postDelayed(this, 500)
         }
     }
@@ -327,9 +329,34 @@ class FloatingBubbleService : Service() {
     /** Asks the engine if the game is in front and where the app's own mouse cursor is. */
     private fun pollEngineState() {
         if (activeGamePackage == null) return
-        val state = ShizukuInputBridge.queryState() ?: return
+        val state = ShizukuInputBridge.queryState()
+        if (state == null) {
+            // The engine inside Shizuku is not answering: red bubble, and try to reconnect.
+            missedPolls++
+            setBubbleStatus(0xFFFF3B30.toInt())
+            val now = SystemClock.elapsedRealtime()
+            if (missedPolls >= 3 && now - lastReconnectAt > 6000 && editor == null) {
+                lastReconnectAt = now
+                startEngine()
+            }
+            return
+        }
+        missedPolls = 0
+        // Green = engine running and the game in front; yellow = running but cannot tell.
+        setBubbleStatus(if (state.foreground == 2) 0xFFFFCC00.toInt() else 0xFF34C759.toInt())
         applyGameVisibility(state.foreground != 0)
         updateCursor(state)
+    }
+
+    /** The bubble border shows if the key engine is connected (green), unsure (yellow) or down (red). */
+    private fun setBubbleStatus(color: Int) {
+        (bubble?.background as? GradientDrawable)?.setStroke(dp(2), color)
+    }
+
+    private fun appVersionLine(): String = try {
+        "App: B13 MAUSE PRO ${packageManager.getPackageInfo(packageName, 0).versionName}"
+    } catch (_: Exception) {
+        "App: B13 MAUSE PRO"
     }
 
     /** Hides everything this app draws over other apps when the game is not in front. */
