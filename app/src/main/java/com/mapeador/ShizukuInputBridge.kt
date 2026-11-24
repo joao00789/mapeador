@@ -485,6 +485,8 @@ class ShizukuInputUserService : Binder() {
     private var pendingMouseDeltaX = 0.0
     private var pendingMouseDeltaY = 0.0
     private var mouseMotionFlushScheduled = false
+    private var smoothedLookDeltaX = 0f
+    private var smoothedLookDeltaY = 0f
 
     override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
         if (code == IBinder.INTERFACE_TRANSACTION) {
@@ -602,6 +604,8 @@ class ShizukuInputUserService : Binder() {
             pendingMouseDeltaX = 0.0
             pendingMouseDeltaY = 0.0
             mouseMotionFlushScheduled = false
+            smoothedLookDeltaX = 0f
+            smoothedLookDeltaY = 0f
         }
         injector = null
         lookControl = null
@@ -835,32 +839,48 @@ class ShizukuInputUserService : Binder() {
             pendingMouseDeltaX += deltaX.toDouble()
             pendingMouseDeltaY += deltaY.toDouble()
             if (!mouseMotionFlushScheduled) {
-                mouseMotionFlushScheduled = true
-                val runGeneration = generation
-                mouseMotionExecutor.schedule(
-                    { flushMouseMotion(runGeneration) },
-                    MOUSE_MOTION_FRAME_MS,
-                    TimeUnit.MILLISECONDS
-                )
+                scheduleMouseMotionFlush(generation)
             }
         }
+    }
+
+    private fun scheduleMouseMotionFlush(runGeneration: Int) {
+        mouseMotionFlushScheduled = true
+        mouseMotionExecutor.schedule(
+            { flushMouseMotion(runGeneration) },
+            MOUSE_MOTION_FRAME_MS,
+            TimeUnit.MILLISECONDS
+        )
     }
 
     private fun flushMouseMotion(runGeneration: Int) {
         synchronized(lock) {
             if (generation != runGeneration || !running) return
-            val deltaX = pendingMouseDeltaX.toFloat()
-            val deltaY = pendingMouseDeltaY.toFloat()
+            val inputDeltaX = pendingMouseDeltaX.toFloat()
+            val inputDeltaY = pendingMouseDeltaY.toFloat()
             pendingMouseDeltaX = 0.0
             pendingMouseDeltaY = 0.0
             mouseMotionFlushScheduled = false
-            if (!foreground || !mouseManaged || (deltaX == 0f && deltaY == 0f)) return
+            if (!foreground || !mouseManaged) return
 
             if (mouseLookActive) {
+                smoothedLookDeltaX =
+                    smoothedLookDeltaX * LOOK_DELTA_SMOOTHING + inputDeltaX * (1f - LOOK_DELTA_SMOOTHING)
+                smoothedLookDeltaY =
+                    smoothedLookDeltaY * LOOK_DELTA_SMOOTHING + inputDeltaY * (1f - LOOK_DELTA_SMOOTHING)
+                if (kotlin.math.abs(smoothedLookDeltaX) < LOOK_DELTA_EPSILON) smoothedLookDeltaX = 0f
+                if (kotlin.math.abs(smoothedLookDeltaY) < LOOK_DELTA_EPSILON) smoothedLookDeltaY = 0f
+                if (smoothedLookDeltaX == 0f && smoothedLookDeltaY == 0f) return
                 val touch = injector?.takeIf { it.available } ?: return
-                lookControl?.let { moveLook(touch, it, deltaX, deltaY) }
+                lookControl?.let { moveLook(touch, it, smoothedLookDeltaX, smoothedLookDeltaY) }
+                if (smoothedLookDeltaX != 0f || smoothedLookDeltaY != 0f) {
+                    scheduleMouseMotionFlush(runGeneration)
+                }
             } else {
-                moveCursor(deltaX, deltaY)
+                smoothedLookDeltaX = 0f
+                smoothedLookDeltaY = 0f
+                if (inputDeltaX == 0f && inputDeltaY == 0f) return
+                moveCursor(inputDeltaX, inputDeltaY)
                 if (cursorFinger >= 0) injector?.move(cursorFinger, cursorX, cursorY)
             }
         }
@@ -904,6 +924,8 @@ class ShizukuInputUserService : Binder() {
             cursorY = 0f
             pendingMouseDeltaX = 0.0
             pendingMouseDeltaY = 0.0
+            smoothedLookDeltaX = 0f
+            smoothedLookDeltaY = 0f
             mouseLookActive = active
             Log.i(tag, if (active) "Mouse FPS: mira ativa" else "Mouse FPS: cursor próprio")
         }
@@ -1222,6 +1244,8 @@ class ShizukuInputUserService : Binder() {
         const val REL_X = 0
         const val REL_Y = 1
         const val MOUSE_LOOK_SCALE = 1.0f
+        const val LOOK_DELTA_SMOOTHING = 0.35f
+        const val LOOK_DELTA_EPSILON = 0.001f
         const val MOUSE_MOTION_FRAME_MS = 8L
         const val CURSOR_SPEED = 1.6f
         const val UP = 0

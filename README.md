@@ -43,6 +43,12 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
 
+## Novidades da 0.6.3
+
+- Suaviza os deltas da mira FPS em quadros curtos, preservando o movimento acumulado e sem
+  aplicar suavização ao cursor livre.
+- A seta recebe prioridade de desenho acima do painel lateral e dos indicadores.
+
 ## Novidades da 0.6.2
 
 - O cursor do app começa em `(0,0)` e retorna a essa posição quando o modo do mouse é alternado.

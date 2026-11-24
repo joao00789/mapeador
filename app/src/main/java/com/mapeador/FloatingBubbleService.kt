@@ -392,7 +392,11 @@ class FloatingBubbleService : Service() {
         cursorShown = true
         var view = cursorView
         if (view == null) {
-            view = CursorView(this)
+            view = CursorView(this).apply {
+                elevation = dp(48).toFloat()
+                isClickable = false
+                isFocusable = false
+            }
             cursorView = view
         }
         if (view.parent !== root) {

@@ -47,6 +47,8 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 `KEY_SIZE_DP = 40`, `JOYSTICK_SIZE_DP = 88` (× raio 0.35–1.0), `JOYSTICK_MIN_DP = 56`.
 
 ## Histórico
+- 0.6.3 — Deltas da mira FPS suavizados em quadros curtos com preservação do movimento acumulado;
+  cursor livre sem suavização e seta com elevação acima do painel lateral.
 - 0.6.2 — Cursor do app inicia e volta a `(0,0)` ao alternar modos. O toque de tiro em HOLD
   permanece ativo enquanto o dedo independente do Mouse FPS move a câmera.
 - 0.6.1 — Mouse FPS não recentraliza mais por raio: o dedo segue os deltas até as bordas reais
