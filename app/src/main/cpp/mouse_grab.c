@@ -1,6 +1,7 @@
 #include <jni.h>
 #include <errno.h>
 #include <linux/input.h>
+#include <stdio.h>
 #include <sys/ioctl.h>
 
 static int get_fd(JNIEnv *env, jobject file_descriptor) {
@@ -33,7 +34,7 @@ static int has_bit(const unsigned long *bits, unsigned int bit) {
 }
 
 /*
- * Return bit 0 for a mouse-like device and bit 1 for a relative X/Y device.
+ * Return bit 0 for a mouse-like device, bit 1 for relative X/Y and bit 2 for a keyboard.
  * The event-node names in /proc/bus/input/devices vary across Android vendors,
  * so inspect the kernel capabilities instead of guessing from the product name.
  */
@@ -59,9 +60,42 @@ Java_com_mapeador_NativeMouseGrab_capabilities(JNIEnv *env, jobject thiz, jobjec
         (has_bit(key_bits, BTN_LEFT) || has_bit(key_bits, BTN_RIGHT) ||
          has_bit(key_bits, BTN_MIDDLE) || has_bit(key_bits, BTN_SIDE) ||
          has_bit(key_bits, BTN_EXTRA));
+    const int has_keyboard = has_keys &&
+        ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)), key_bits) >= 0 &&
+        (has_bit(key_bits, KEY_A) || has_bit(key_bits, KEY_ENTER) ||
+         has_bit(key_bits, KEY_SPACE));
 
-    if (!has_xy && !has_mouse_button) return 0;
-    return 1 | (has_xy ? 2 : 0);
+    if (!has_xy && !has_mouse_button && !has_keyboard) return 0;
+    return ((has_xy || has_mouse_button) ? 1 : 0) |
+        (has_xy ? 2 : 0) |
+        (has_keyboard ? 4 : 0);
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_mapeador_NativeMouseGrab_identity(JNIEnv *env, jobject thiz, jobject file_descriptor) {
+    (void) thiz;
+    int fd = get_fd(env, file_descriptor);
+    if (fd < 0) return NULL;
+
+    char phys[256] = {0};
+    char uniq[256] = {0};
+    char name[256] = {0};
+    struct input_id id = {0};
+    ioctl(fd, EVIOCGPHYS(sizeof(phys)), phys);
+    ioctl(fd, EVIOCGUNIQ(sizeof(uniq)), uniq);
+    ioctl(fd, EVIOCGNAME(sizeof(name)), name);
+    ioctl(fd, EVIOCGID, &id);
+
+    char identity[768] = {0};
+    if (phys[0] != '\0') {
+        snprintf(identity, sizeof(identity), "phys:%s", phys);
+    } else if (uniq[0] != '\0') {
+        snprintf(identity, sizeof(identity), "uniq:%s", uniq);
+    } else {
+        snprintf(identity, sizeof(identity), "device:%04x:%04x:%04x:%s",
+                 id.bustype, id.vendor, id.product, name);
+    }
+    return (*env)->NewStringUTF(env, identity);
 }
 
 JNIEXPORT jint JNICALL
@@ -70,7 +104,6 @@ Java_com_mapeador_NativeMouseGrab_grab(JNIEnv *env, jobject thiz, jobject file_d
     (void) thiz;
     int fd = get_fd(env, file_descriptor);
     if (fd < 0) return fd;
-    int grab = enabled ? 1 : 0;
-    if (ioctl(fd, EVIOCGRAB, &grab) < 0) return -errno;
+    if (ioctl(fd, EVIOCGRAB, enabled ? 1 : 0) < 0) return -errno;
     return 0;
 }

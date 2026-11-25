@@ -20,6 +20,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
+import android.net.LocalServerSocket
 import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -43,6 +44,7 @@ import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import java.util.UUID
+import java.io.DataInputStream
 import kotlin.math.abs
 
 internal object FloatingBubbleIntent {
@@ -80,6 +82,24 @@ private fun JSONObject.sensitivityValue(name: String): Float {
         100 -> value.coerceIn(0f, 100f)
         1000 -> (value / 30f).coerceIn(0f, 100f)
         else -> (value * (100f / 3f)).coerceIn(0f, 100f)
+    }
+}
+
+private fun publishPushedCursor(state: ShizukuInputBridge.EngineState) {
+    synchronized(cursorPushLock) {
+        pendingCursorState = state
+        if (cursorUpdatePosted) return
+        cursorUpdatePosted = true
+    }
+    handler.post {
+        val latest = synchronized(cursorPushLock) {
+            pendingCursorState.also {
+                pendingCursorState = null
+                cursorUpdatePosted = false
+            }
+        } ?: return@post
+        lastEngineState = latest
+        updateCursor(latest)
     }
 }
 
@@ -173,6 +193,10 @@ private fun keyLabel(key: String): String = when (key.uppercase()) {
     "MOUSE_LEFT" -> "Mouse-E"
     "MOUSE_RIGHT" -> "Mouse-D"
     "MOUSE_MIDDLE" -> "Mouse-M"
+    "MOUSE_WHEEL_UP" -> "Roda ↑"
+    "MOUSE_WHEEL_DOWN" -> "Roda ↓"
+    "MOUSE_WHEEL_LEFT" -> "Roda ←"
+    "MOUSE_WHEEL_RIGHT" -> "Roda →"
     "DPAD_UP" -> "↑"
     "DPAD_DOWN" -> "↓"
     "DPAD_LEFT" -> "←"
@@ -203,6 +227,9 @@ private class KeyCaptureFrame(context: android.content.Context) : FrameLayout(co
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (captureEnabled && event.isFromSource(InputDevice.SOURCE_MOUSE) &&
+            event.actionMasked == MotionEvent.ACTION_SCROLL
+        ) return captureMouseWheel(event)
         if (captureEnabled && event.isFromSource(InputDevice.SOURCE_MOUSE) &&
             (event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS ||
                 event.actionMasked == MotionEvent.ACTION_DOWN)
@@ -274,6 +301,27 @@ private class KeyCaptureFrame(context: android.content.Context) : FrameLayout(co
         }
         return super.dispatchTouchEvent(event)
     }
+
+    override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
+        if (captureEnabled && event.isFromSource(InputDevice.SOURCE_MOUSE) &&
+            event.actionMasked == MotionEvent.ACTION_SCROLL
+        ) return captureMouseWheel(event)
+        return super.dispatchGenericMotionEvent(event)
+    }
+
+    private fun captureMouseWheel(event: MotionEvent): Boolean {
+        val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+        val horizontal = event.getAxisValue(MotionEvent.AXIS_HSCROLL)
+        val name = when {
+            vertical > 0f -> "MOUSE_WHEEL_UP"
+            vertical < 0f -> "MOUSE_WHEEL_DOWN"
+            horizontal > 0f -> "MOUSE_WHEEL_RIGHT"
+            horizontal < 0f -> "MOUSE_WHEEL_LEFT"
+            else -> null
+        } ?: return false
+        onKeyCaptured?.invoke(name)
+        return true
+    }
 }
 
 class FloatingBubbleService : Service() {
@@ -301,13 +349,25 @@ class FloatingBubbleService : Service() {
     private var engineSize: Pair<Int, Int>? = null
     private var captureTarget: String? = null
     private var activeGamePackage: String? = null
-    private var lastEngineState: ShizukuInputBridge.EngineState? = null
+    @Volatile private var lastEngineState: ShizukuInputBridge.EngineState? = null
     private var menuPreviousMouseLookActive: Boolean? = null
     private val handler = Handler(Looper.getMainLooper())
     /** False while the game is not in front: the bubble and the key indicators are hidden. */
     private var overlaysVisible = true
     private var cursorView: View? = null
     private var cursorShown = false
+    private var cursorParams: WindowManager.LayoutParams? = null
+    private var mouseModeIndicator: TextView? = null
+    private var mouseModeParams: WindowManager.LayoutParams? = null
+    private var hasMouseLookControl = false
+    private var cursorScale = 1f
+    private val cursorPushLock = Any()
+    private var pendingCursorState: ShizukuInputBridge.EngineState? = null
+    private var cursorUpdatePosted = false
+    @Volatile private var cursorSocketRunning = false
+    private val cursorSocketName = "mapeador_cursor_${UUID.randomUUID().toString().replace("-", "")}"
+    private var cursorServerSocket: LocalServerSocket? = null
+    private var cursorSocketThread: Thread? = null
     private var missedPolls = 0
     private var lastReconnectAt = 0L
     private var diagnosticsView: View? = null
@@ -315,7 +375,7 @@ class FloatingBubbleService : Service() {
     private val statePoller = object : Runnable {
         override fun run() {
             pollEngineState()
-            handler.postDelayed(this, if (cursorShown) 16L else 100L)
+            handler.postDelayed(this, if (cursorShown) 250L else 750L)
         }
     }
     private val diagnosticsTicker = object : Runnable {
@@ -339,6 +399,7 @@ class FloatingBubbleService : Service() {
         super.onCreate()
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).registerOnSharedPreferenceChangeListener(preferenceListener)
         startAsForegroundService()
+        startCursorSocket()
         if (Settings.canDrawOverlays(this)) showBubble() else stopSelf()
     }
 
@@ -422,7 +483,7 @@ class FloatingBubbleService : Service() {
         lastEngineState = state
         // Green = engine running and the game in front; yellow = running but cannot tell.
         setBubbleStatus(if (state.foreground == 2) 0xFFFFCC00.toInt() else 0xFF34C759.toInt())
-        applyGameVisibility(state.foreground != 0)
+        applyGameVisibility(state.foreground == 1)
         updateCursor(state)
     }
 
@@ -451,10 +512,11 @@ class FloatingBubbleService : Service() {
         }
     }
 
-    /** Draws the app cursor when this Android version has no global custom-pointer API. */
+    /** Receives cursor positions pushed by the Shizuku process and renders a dedicated window. */
     private fun updateCursor(state: ShizukuInputBridge.EngineState) {
-        val root = (menu as? FrameLayout) ?: keymapOverlay
-        if (root == null || !state.cursorVisible || !overlaysVisible) {
+        updateMouseModeIndicator(state)
+        val manager = windowManager
+        if (manager == null || !state.cursorVisible || !overlaysVisible) {
             cursorShown = false
             cursorView?.visibility = View.GONE
             return
@@ -463,27 +525,142 @@ class FloatingBubbleService : Service() {
         var view = cursorView
         if (view == null) {
             view = CursorView(this).apply {
-                elevation = dp(48).toFloat()
+                alpha = 1f
                 isClickable = false
                 isFocusable = false
             }
             cursorView = view
         }
-        if (view.parent !== root) {
-            val scale = readControls().firstOrNull { it.type == "MOUSE_LOOK" }?.cursorSize ?: 1f
-            (view.parent as? ViewGroup)?.removeView(view)
-            root.addView(
-                view,
-                FrameLayout.LayoutParams(
-                    dp((24 * scale).toInt().coerceIn(18, 60)),
-                    dp((34 * scale).toInt().coerceIn(24, 80))
-                )
-            )
+        val params = cursorParams ?: run {
+            cursorScale = readControls().firstOrNull { it.type == "MOUSE_LOOK" }?.cursorSize ?: 1f
+            WindowManager.LayoutParams(
+                dp((24 * cursorScale).toInt().coerceIn(18, 60)),
+                dp((34 * cursorScale).toInt().coerceIn(24, 80)),
+                overlayWindowType(),
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                alpha = 1f
+                x = state.cursorX
+                y = state.cursorY
+            }.also { cursorParams = it }
         }
         view.visibility = View.VISIBLE
-        view.translationX = state.cursorX.toFloat()
-        view.translationY = state.cursorY.toFloat()
-        view.bringToFront()
+        params.x = state.cursorX
+        params.y = state.cursorY
+        params.width = dp((24 * cursorScale).toInt().coerceIn(18, 60))
+        params.height = dp((34 * cursorScale).toInt().coerceIn(24, 80))
+        try {
+            if (view.parent == null) manager.addView(view, params)
+            else manager.updateViewLayout(view, params)
+        } catch (error: WindowManager.BadTokenException) {
+            Log.e(TAG, "Não foi possível exibir a janela do cursor", error)
+            cursorShown = false
+        } catch (error: IllegalArgumentException) {
+            Log.w(TAG, "A janela do cursor não está anexada", error)
+            cursorShown = false
+        }
+    }
+
+    private fun updateMouseModeIndicator(state: ShizukuInputBridge.EngineState) {
+        val manager = windowManager ?: return
+        if (!hasMouseLookControl || !overlaysVisible) {
+            mouseModeIndicator?.visibility = View.GONE
+            return
+        }
+        val indicator = mouseModeIndicator ?: TextView(this).apply {
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = roundedBackground(0xE620232B.toInt(), 0xFFE5484D.toInt(), dp(16))
+            alpha = 1f
+            isClickable = false
+            isFocusable = false
+        }.also { mouseModeIndicator = it }
+        val modeLabel = if (state.mouseLookActive) "MIRA" else "CURSOR"
+        if (indicator.parent != null && indicator.visibility == View.VISIBLE && indicator.text == modeLabel) {
+            return
+        }
+        indicator.text = modeLabel
+        val params = mouseModeParams ?: WindowManager.LayoutParams(
+            dp(108),
+            dp(34),
+            overlayWindowType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = dp(8)
+            alpha = 1f
+        }.also { mouseModeParams = it }
+        indicator.visibility = View.VISIBLE
+        try {
+            if (indicator.parent == null) manager.addView(indicator, params)
+            else manager.updateViewLayout(indicator, params)
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Não foi possível exibir o indicador do modo do mouse", error)
+            indicator.visibility = View.GONE
+        }
+    }
+
+    private fun startCursorSocket() {
+        if (cursorSocketRunning) return
+        cursorSocketRunning = true
+        try {
+            val server = LocalServerSocket(cursorSocketName)
+            cursorServerSocket = server
+            cursorSocketThread = Thread({
+                while (cursorSocketRunning) {
+                    try {
+                        server.accept().use { socket ->
+                            DataInputStream(socket.inputStream).use { input ->
+                                while (cursorSocketRunning && !socket.isClosed) {
+                                    val x = input.readInt()
+                                    val y = input.readInt()
+                                    val visible = input.readBoolean()
+                                    val mouseLookActive = input.readBoolean()
+                                    val foreground = lastEngineState?.foreground ?: 2
+                                    publishPushedCursor(
+                                        ShizukuInputBridge.EngineState(
+                                            foreground,
+                                            visible,
+                                            x,
+                                            y,
+                                            mouseLookActive
+                                        )
+                                    )
+                                }
+                            }
+                        }
+                    } catch (error: Exception) {
+                        if (cursorSocketRunning) {
+                            Log.w(TAG, "Conexão de atualização do cursor encerrada", error)
+                        }
+                    }
+                }
+            }, "NexoPlay-CursorSocket").apply { isDaemon = true }.also { it.start() }
+        } catch (error: Exception) {
+            cursorSocketRunning = false
+            Log.e(TAG, "Não foi possível abrir o canal local do cursor", error)
+        }
+    }
+
+    private fun stopCursorSocket() {
+        cursorSocketRunning = false
+        try {
+            cursorServerSocket?.close()
+        } catch (error: Exception) {
+            Log.w(TAG, "Não foi possível fechar o canal local do cursor", error)
+        }
+        cursorServerSocket = null
+        cursorSocketThread = null
     }
 
     private fun showDiagnostics() {
@@ -556,7 +733,21 @@ class FloatingBubbleService : Service() {
         val game = activeGamePackage ?: return
         val size = realScreenSize()
         engineSize = size
-        ShizukuInputBridge.startMapping(this, game, mappingPayload(), size.first, size.second)
+        hasMouseLookControl = readControls().any { it.type == "MOUSE_LOOK" }
+        ShizukuInputBridge.startMapping(
+            this,
+            game,
+            mappingPayload(),
+            size.first,
+            size.second,
+            cursorSocketName,
+            getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .getString(EMERGENCY_KEY, "F12").orEmpty(),
+            getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .getBoolean(CAPTURE_KEYBOARD, false),
+            getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .getString(RIGHT_CLICK_MODE, "BACK").orEmpty()
+        )
     }
 
     /** What the engine needs from each control: type, key, position and joystick reach. */
@@ -638,8 +829,14 @@ class FloatingBubbleService : Service() {
     override fun onDestroy() {
         hideHud()
         handler.removeCallbacks(statePoller)
+        stopCursorSocket()
         closeDiagnostics()
+        removeOverlay(cursorView)
+        removeOverlay(mouseModeIndicator)
         cursorView = null
+        cursorParams = null
+        mouseModeIndicator = null
+        mouseModeParams = null
         ShizukuInputBridge.stopMapping(true)
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).unregisterOnSharedPreferenceChangeListener(preferenceListener)
         removeOverlay(editor)
@@ -871,6 +1068,7 @@ class FloatingBubbleService : Service() {
         try {
             manager.addView(scrim, params)
             menu = scrim
+            bringCursorOverlayToFront()
             menuPreviousMouseLookActive = previousMouseLookActive
             ShizukuInputBridge.setMouseLookActive(false)
             pollEngineState()
@@ -1018,6 +1216,7 @@ class FloatingBubbleService : Service() {
         try {
             manager.addView(root, params)
             editor = root
+            bringCursorOverlayToFront()
             buildEditorHeader(root)
             renderControls(root)
         } catch (error: WindowManager.BadTokenException) {
@@ -1071,6 +1270,42 @@ class FloatingBubbleService : Service() {
                 cell("Limpar") { showResetConfirmation() }
             )
         )
+        panel.addView(divider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1))
+        val keyboardCaptureCell = cell(
+            if (getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                    .getBoolean(CAPTURE_KEYBOARD, false)
+            ) "Teclado: capturado" else "Teclado: normal"
+        ) { }
+        keyboardCaptureCell.setOnClickListener {
+            val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            val enabled = !preferences.getBoolean(CAPTURE_KEYBOARD, false)
+            preferences.edit().putBoolean(CAPTURE_KEYBOARD, enabled).apply()
+            keyboardCaptureCell.text = if (enabled) "Teclado: capturado" else "Teclado: normal"
+            Toast.makeText(
+                this@FloatingBubbleService,
+                "A opção será aplicada ao sair do editor.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        panel.addView(
+            row(
+                cell("Emergência: ${keyLabel(getEmergencyKey())}") { beginEmergencyKeyCapture() },
+                keyboardCaptureCell
+            )
+        )
+        val rightClickCell = cell("Clique direito: ${rightClickLabel()}") { }
+        rightClickCell.setOnClickListener {
+            val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+            val next = if (preferences.getString(RIGHT_CLICK_MODE, "BACK") == "BACK") {
+                "LONG_PRESS"
+            } else {
+                "BACK"
+            }
+            preferences.edit().putString(RIGHT_CLICK_MODE, next).apply()
+            rightClickCell.text = "Clique direito: ${rightClickLabel()}"
+        }
+        panel.addView(divider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1))
+        panel.addView(row(rightClickCell))
         root.addView(
             panel,
             FrameLayout.LayoutParams(
@@ -1697,11 +1932,17 @@ class FloatingBubbleService : Service() {
         })
         sensitivitySlider("tamanho da seta", control.cursorSize, 0.6f, 1.8f) { size ->
             writeControls(readControls().map { if (it.id == id) it.copy(cursorSize = size) else it })
-            cursorView?.let { old ->
-                val params = old.layoutParams
-                params.width = dp((24 * size).toInt().coerceIn(18, 60))
-                params.height = dp((34 * size).toInt().coerceIn(24, 80))
-                old.layoutParams = params
+            cursorScale = size
+            cursorView?.let { view ->
+                cursorParams?.let { params ->
+                    params.width = dp((24 * size).toInt().coerceIn(18, 60))
+                    params.height = dp((34 * size).toInt().coerceIn(24, 80))
+                    try {
+                        windowManager?.updateViewLayout(view, params)
+                    } catch (error: IllegalArgumentException) {
+                        Log.w(TAG, "A janela do cursor não está anexada", error)
+                    }
+                }
             }
         }
         val buttons = LinearLayout(this).apply {
@@ -2013,10 +2254,26 @@ class FloatingBubbleService : Service() {
         renderControls(root)
     }
 
+    private fun beginEmergencyKeyCapture() {
+        val root = editor ?: return
+        captureTarget = EMERGENCY_CAPTURE_TARGET
+        root.captureEnabled = true
+        updateCaptureWindow(focusable = true)
+        root.requestFocus()
+        Toast.makeText(this, "Pressione a tecla de emergência.", Toast.LENGTH_SHORT).show()
+    }
+
     private fun finishCapture(key: String) {
         val target = captureTarget ?: return
         captureTarget = null
         editor?.captureEnabled = false
+        if (target == EMERGENCY_CAPTURE_TARGET) {
+            getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .edit().putString(EMERGENCY_KEY, key).apply()
+            updateCaptureWindow(focusable = false)
+            Toast.makeText(this, "Tecla de emergência: ${keyLabel(key)}", Toast.LENGTH_SHORT).show()
+            return
+        }
         val controls = readControls().map { if (it.id == target) it.copy(key = key) else it }
         writeControls(controls)
         editor?.let(::renderControls)
@@ -2114,6 +2371,14 @@ class FloatingBubbleService : Service() {
                     responseMs = item.optInt("responseMs", 0).coerceIn(0, 300)
                 )
             }
+
+            private fun getEmergencyKey(): String =
+                getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(EMERGENCY_KEY, "F12").orEmpty()
+
+            private fun rightClickLabel(): String =
+                if (getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                        .getString(RIGHT_CLICK_MODE, "BACK") == "LONG_PRESS"
+                ) "Toque longo" else "Voltar"
         } catch (error: JSONException) {
             Log.e(TAG, "Não foi possível ler os controles salvos", error)
             emptyList()
@@ -2365,6 +2630,32 @@ class FloatingBubbleService : Service() {
         }
     }
 
+    private fun bringCursorOverlayToFront() {
+        val manager = windowManager ?: return
+        if (cursorShown) {
+            val view = cursorView
+            val params = cursorParams
+            if (view != null && params != null && view.parent != null) {
+                try {
+                    manager.removeView(view)
+                    manager.addView(view, params)
+                } catch (error: RuntimeException) {
+                    Log.w(TAG, "Não foi possível elevar a janela do cursor", error)
+                }
+            }
+        }
+        val indicator = mouseModeIndicator
+        val indicatorParams = mouseModeParams
+        if (indicator?.parent != null && indicatorParams != null) {
+            try {
+                manager.removeView(indicator)
+                manager.addView(indicator, indicatorParams)
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "Não foi possível elevar o indicador do modo do mouse", error)
+            }
+        }
+    }
+
     private companion object {
         const val TAG = "NexoPlay"
         const val NOTIFICATION_ID = 7321
@@ -2372,6 +2663,10 @@ class FloatingBubbleService : Service() {
         const val ACTION_STOP = "com.mapeador.action.STOP_FLOATING_PANEL"
         const val PREFERENCES = "mapeador"
         const val MAPPING = "mapping"
+        const val EMERGENCY_KEY = "emergency_key"
+        const val EMERGENCY_CAPTURE_TARGET = "__emergency_key__"
+        const val CAPTURE_KEYBOARD = "capture_keyboard"
+        const val RIGHT_CLICK_MODE = "right_click_mode"
         const val CONTROL_TAG = "nexoplay-mapping-control"
         const val KEY_SIZE_DP = 40
         const val JOYSTICK_SIZE_DP = 88

@@ -12,6 +12,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.InputDevice
 import android.view.InputEvent
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.widget.Toast
 import org.json.JSONArray
@@ -19,11 +20,13 @@ import rikka.shizuku.Shizuku
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileDescriptor
+import java.lang.reflect.Proxy
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** Small Binder bridge: the user service runs as Shizuku's shell/root identity. */
 object ShizukuInputBridge {
@@ -50,6 +53,8 @@ object ShizukuInputBridge {
             callback(false, lastError)
             return
         }
+        private val cursorUpdates = java.util.concurrent.LinkedBlockingDeque<CursorUpdate>(1)
+        @Volatile private var cursorSocket: android.net.LocalSocket? = null
         if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             lastError = "B13 MAUSE PRO ainda não foi autorizado no Shizuku"
             callback(false, lastError)
@@ -73,7 +78,7 @@ object ShizukuInputBridge {
         ).daemon(false)
             .processNameSuffix("input")
             .tag("nexoplay-input")
-            .version(13)
+            .version(14)
         val serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 remote = binder
@@ -147,7 +152,17 @@ object ShizukuInputBridge {
      * Starts the key engine. [width] and [height] are the real display size in pixels in the
      * current rotation; the saved positions are fractions of that size.
      */
-    fun startMapping(context: Context, gamePackage: String, mappingJson: String, width: Int, height: Int) {
+    fun startMapping(
+        context: Context,
+        gamePackage: String,
+        mappingJson: String,
+        width: Int,
+        height: Int,
+        cursorSocketName: String,
+        emergencyKey: String,
+        captureKeyboard: Boolean,
+        rightClickMode: String
+    ) {
         val appContext = context.applicationContext
         bind(appContext) { ready, message ->
             if (!ready) {
@@ -162,6 +177,10 @@ object ShizukuInputBridge {
                     parcel.writeString(mappingJson)
                     parcel.writeInt(width)
                     parcel.writeInt(height)
+                    parcel.writeString(cursorSocketName)
+                    parcel.writeString(emergencyKey)
+                    parcel.writeInt(if (captureKeyboard) 1 else 0)
+                    parcel.writeString(rightClickMode)
                 },
                 { reply -> reply.readString().orEmpty() }
             )
@@ -251,6 +270,7 @@ private class TouchInjector {
 
     private val lock = Any()
     private val fingers = ArrayList<Finger>()
+    private val keyDownTimes = HashMap<Int, Long>()
     private var downTime = 0L
     private var target: Any? = null
     private var injectMethod: java.lang.reflect.Method? = null
@@ -352,6 +372,91 @@ private class TouchInjector {
         }
     }
 
+    fun injectKey(key: String, down: Boolean) {
+        val code = KeyEvent.keyCodeFromString("KEYCODE_$key")
+        if (code == KeyEvent.KEYCODE_UNKNOWN) return
+        injectKeyCode(code, down)
+    }
+
+    private fun injectKeyCode(code: Int, down: Boolean) {
+        val now = SystemClock.uptimeMillis()
+        val downTime = synchronized(lock) {
+            if (down) keyDownTimes.getOrPut(code) { now }
+            else keyDownTimes.remove(code) ?: now
+        }
+        val event = KeyEvent(
+            downTime,
+            now,
+            if (down) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP,
+            code,
+            0,
+            0,
+            0,
+            0,
+            0,
+            InputDevice.SOURCE_KEYBOARD
+        )
+        injectEvent(event)
+    }
+
+    fun injectKeyRepeat(key: String) {
+        val code = KeyEvent.keyCodeFromString("KEYCODE_$key")
+        if (code == KeyEvent.KEYCODE_UNKNOWN) return
+        val downTime = synchronized(lock) { keyDownTimes[code] } ?: return
+        injectEvent(
+            KeyEvent(
+                downTime,
+                SystemClock.uptimeMillis(),
+                KeyEvent.ACTION_DOWN,
+                code,
+                1,
+                0,
+                0,
+                0,
+                KeyEvent.FLAG_LONG_PRESS,
+                InputDevice.SOURCE_KEYBOARD
+            )
+        )
+    }
+
+    fun injectScroll(vertical: Float, horizontal: Float, x: Float, y: Float) {
+        val now = SystemClock.uptimeMillis()
+        val properties = MotionEvent.PointerProperties().apply {
+            id = 0
+            toolType = MotionEvent.TOOL_TYPE_MOUSE
+        }
+        val coordinates = MotionEvent.PointerCoords().apply {
+            this.x = x
+            this.y = y
+            pressure = 0f
+            size = 0f
+            setAxisValue(MotionEvent.AXIS_VSCROLL, vertical)
+            setAxisValue(MotionEvent.AXIS_HSCROLL, horizontal)
+        }
+        val event = MotionEvent.obtain(
+            now,
+            now,
+            MotionEvent.ACTION_SCROLL,
+            1,
+            arrayOf(properties),
+            arrayOf(coordinates),
+            0,
+            0,
+            1f,
+            1f,
+            0,
+            0,
+            InputDevice.SOURCE_MOUSE,
+            0
+        )
+        injectEvent(event)
+    }
+
+    fun tap(x: Float, y: Float) {
+        val id = down(x, y)
+        if (id >= 0) up(id)
+    }
+
     fun cancel(id: Int) {
         synchronized(lock) {
             val index = fingers.indexOfFirst { it.id == id }
@@ -371,6 +476,7 @@ private class TouchInjector {
     fun releaseAll() {
         synchronized(lock) {
             while (fingers.isNotEmpty()) up(fingers.last().id)
+            keyDownTimes.keys.toList().forEach { injectKeyCode(it, false) }
         }
     }
 
@@ -419,6 +525,29 @@ private class TouchInjector {
         }
     }
 
+    private fun injectEvent(event: InputEvent): Boolean {
+        val method = injectMethod ?: return false
+        return try {
+            setDisplayId?.let { setter ->
+                try { setter.invoke(event, 0) } catch (_: Throwable) { }
+            }
+            val result = method.invoke(target, event, 0)
+            sent++
+            if (result == false) {
+                failed++
+                lastError = "o Android recusou o evento"
+                false
+            } else true
+        } catch (error: Throwable) {
+            failed++
+            lastError = (error.cause ?: error).let { it.message ?: it.javaClass.simpleName }
+            Log.w(TAG, "Falha ao injetar evento de entrada", error)
+            false
+        } finally {
+            (event as? MotionEvent)?.recycle()
+        }
+    }
+
     /** One line for the diagnostics card. */
     fun summary(): String = when {
         !available -> "indisponível neste Android"
@@ -444,6 +573,7 @@ class ShizukuInputUserService : Binder() {
     @Volatile private var height = 1
     @Volatile private var foreground = true
     private var bindings = emptyMap<String, List<Binding>>()
+    @Volatile private var emergencyKey = "F12"
     private var injector: TouchInjector? = null
     // Start in camera mode when configured; its shortcut suspends the aim for cursor use.
     @Volatile private var mouseLookActive = false
@@ -451,12 +581,28 @@ class ShizukuInputUserService : Binder() {
     /** 1 = game in front, 0 = not in front, 2 = could not tell, -1 = not watching. */
     @Volatile private var foregroundState = -1
     private var watcherStarted = false
+    @Volatile private var taskStackListenerStatus = "não registrado"
+    private var taskStackListenerBinder: IBinder? = null
+    private val foregroundCheckQueued = AtomicBoolean(false)
+    private val foregroundExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "NexoPlay-ForegroundEvents").apply { isDaemon = true }
+    }
     @Volatile private var mouseManaged = false
     @Volatile private var grabMice = false
+    @Volatile private var captureKeyboard = false
+    @Volatile private var rightClickMode = "BACK"
+    @Volatile private var grabKeyboard = false
+    @Volatile private var chatMode = false
+    @Volatile private var chatEnterReleasePending = false
     private val grabbedPaths = ConcurrentHashMap.newKeySet<String>()
     private val knownMousePaths = ConcurrentHashMap.newKeySet<String>()
     private val mouseMotionPaths = ConcurrentHashMap.newKeySet<String>()
+    private val grabbedKeyboardPaths = ConcurrentHashMap.newKeySet<String>()
+    private val knownKeyboardPaths = ConcurrentHashMap.newKeySet<String>()
+    private val capturableKeyboardPaths = ConcurrentHashMap.newKeySet<String>()
+    private val mouseNodeGroups = ConcurrentHashMap<String, String>()
     private val mouseGrabFailures = ConcurrentHashMap<String, String>()
+    private val keyboardGrabFailures = ConcurrentHashMap<String, String>()
     private val pressedKeySources = HashMap<String, MutableSet<String>>()
     @Volatile private var grabNote = ""
     @Volatile private var mouseCandidateSummary = "não identificado"
@@ -470,6 +616,7 @@ class ShizukuInputUserService : Binder() {
     @Volatile private var lastMouseDeltaY = 0
     @Volatile private var lastMouseMoveAt = 0L
     private var cursorFinger = -1
+    private var cursorRightFinger = -1
     private val devices = ConcurrentHashMap<String, FileInputStream>()
     private val swipeExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "NexoPlay-Swipe").apply { isDaemon = true }
@@ -485,6 +632,8 @@ class ShizukuInputUserService : Binder() {
     }
     private var pendingMouseDeltaX = 0.0
     private var pendingMouseDeltaY = 0.0
+    private var wheelRemainderVertical = 0f
+    private var wheelRemainderHorizontal = 0f
     private var mouseMotionFlushScheduled = false
     private var smoothedLookDeltaX = 0f
     private var smoothedLookDeltaY = 0f
@@ -502,8 +651,21 @@ class ShizukuInputUserService : Binder() {
                 val json = data.readString().orEmpty()
                 val screenWidth = data.readInt().coerceAtLeast(1)
                 val screenHeight = data.readInt().coerceAtLeast(1)
+                val cursorSocketName = data.readString().orEmpty()
+                val emergencyKey = data.readString().orEmpty()
+                val captureKeyboard = data.readInt() == 1
+                val rightClickMode = data.readString().orEmpty()
                 val status = try {
-                    start(game, json, screenWidth, screenHeight)
+                    start(
+                        game,
+                        json,
+                        screenWidth,
+                        screenHeight,
+                        cursorSocketName,
+                        emergencyKey,
+                        captureKeyboard,
+                        rightClickMode
+                    )
                 } catch (error: Throwable) {
                     Log.e(tag, "Falha ao iniciar o keymap", error)
                     "Keymap com erro: ${error.message ?: error.javaClass.simpleName}"
@@ -544,7 +706,16 @@ class ShizukuInputUserService : Binder() {
     }
 
     /** Returns the message to show to the user (empty = nothing to say). */
-    private fun start(game: String, json: String, screenWidth: Int, screenHeight: Int): String {
+    private fun start(
+        game: String,
+        json: String,
+        screenWidth: Int,
+        screenHeight: Int,
+        cursorSocketName: String,
+        configuredEmergencyKey: String,
+        captureKeyboard: Boolean,
+        rightClickMode: String
+    ): String {
         stop()
         targetPackage = game
         watchedPackage = game
@@ -552,14 +723,24 @@ class ShizukuInputUserService : Binder() {
         height = screenHeight
         cursorSpeed = CURSOR_SPEED
         bindings = parseMappings(json)
+        emergencyKey = configuredEmergencyKey.ifBlank { "F12" }
+        this.captureKeyboard = captureKeyboard
+        this.rightClickMode = rightClickMode
+        chatMode = false
+        chatEnterReleasePending = false
         lookControl = bindings.values.flatten().map { it.control }.firstOrNull { it.type == "MOUSE_LOOK" }
-        mouseManaged = true
+        mouseManaged = emergencyKey.startsWith("MOUSE_") || bindings.any { (key, keyBindings) ->
+            key.startsWith("MOUSE_") || keyBindings.any {
+                it.control.type == "MOUSE_LOOK" || it.control.type == "MOUSE_DRAG"
+            }
+        }
         mouseLookActive = lookControl != null
         cursorX = width / 2f
         cursorY = height / 2f
         cursorFinger = -1
+        cursorRightFinger = -1
         if (foregroundState < 0) foregroundState = 2
-        foreground = foregroundState != 0
+        foreground = foregroundState == 1
         // The watcher also drives the show/hide of the floating panel, so it runs even
         // when there is no key mapped yet.
         ensureForegroundWatcher()
@@ -568,7 +749,9 @@ class ShizukuInputUserService : Binder() {
         injector = touch
         running = true
         val runGeneration = ++generation
-        grabMice = mouseManaged && foregroundState != 0
+        grabMice = mouseManaged && foregroundState == 1
+        grabKeyboard = captureKeyboard && foregroundState == 1
+        startCursorUpdates(cursorSocketName, runGeneration)
         val denied = intArrayOf(0)
         val opened = scanDevices(runGeneration, denied)
         Thread({ watchHotplug(runGeneration) }, "NexoPlay-Hotplug").apply { isDaemon = true }.start()
@@ -590,11 +773,22 @@ class ShizukuInputUserService : Binder() {
     private fun stop() {
         running = false
         generation++
+        cursorUpdates.clear()
+        try { cursorSocket?.close() } catch (_: Exception) { }
+        cursorSocket = null
         grabMice = false
         grabbedPaths.clear()
+        grabbedKeyboardPaths.clear()
         knownMousePaths.clear()
+        knownKeyboardPaths.clear()
+        capturableKeyboardPaths.clear()
         mouseMotionPaths.clear()
+        mouseNodeGroups.clear()
         mouseGrabFailures.clear()
+        keyboardGrabFailures.clear()
+        grabKeyboard = false
+        chatMode = false
+        chatEnterReleasePending = false
         devices.values.forEach { stream ->
             try { stream.close() } catch (_: Exception) { }
         }
@@ -604,6 +798,7 @@ class ShizukuInputUserService : Binder() {
             pressedKeySources.clear()
             injector?.releaseAll()
             cursorFinger = -1
+            cursorRightFinger = -1
             pendingMouseDeltaX = 0.0
             pendingMouseDeltaY = 0.0
             mouseMotionFlushScheduled = false
@@ -627,14 +822,19 @@ class ShizukuInputUserService : Binder() {
         val presentPaths = nodes.mapTo(HashSet()) { it.absolutePath }
         knownMousePaths.retainAll(presentPaths)
         mouseMotionPaths.retainAll(presentPaths)
+        mouseNodeGroups.keys.retainAll(presentPaths)
         grabbedPaths.retainAll(presentPaths)
+        knownKeyboardPaths.retainAll(presentPaths)
+        capturableKeyboardPaths.retainAll(presentPaths)
+        grabbedKeyboardPaths.retainAll(presentPaths)
         mouseGrabFailures.keys.removeIf { it !in presentPaths }
+        keyboardGrabFailures.keys.removeIf { it !in presentPaths }
         for (node in nodes) {
             val path = node.absolutePath
             if (devices.containsKey(path)) continue
             try {
                 val stream = FileInputStream(node)
-                if (mouseManaged) {
+                if (mouseManaged || captureKeyboard) {
                     var capabilityError: String? = null
                     val capabilities = try {
                         NativeMouseGrab.capabilities(stream.fd)
@@ -650,22 +850,27 @@ class ShizukuInputUserService : Binder() {
                         mouseGrabFailures.remove(path)
                         if ((capabilities and NativeMouseGrab.MOUSE_DEVICE) != 0) {
                             knownMousePaths.add(path)
+                            mouseNodeGroups[path] = try {
+                                NativeMouseGrab.identity(stream.fd).orEmpty().ifEmpty { "path:$path" }
+                            } catch (error: Throwable) {
+                                Log.w(tag, "Não foi possível identificar o dispositivo em $path", error)
+                                "path:$path"
+                            }
                             if ((capabilities and NativeMouseGrab.MOUSE_MOTION) != 0) {
                                 mouseMotionPaths.add(path)
                             }
                             if (grabMice) {
-                                val errno = try { NativeMouseGrab.grab(stream.fd, true) } catch (error: Throwable) {
-                                    grabNote = (error.cause ?: error).message ?: error.javaClass.simpleName
-                                    -1
-                                }
-                                if (errno == 0) {
-                                    grabbedPaths.add(path)
-                                    mouseGrabFailures.remove(path)
-                                } else {
-                                    mouseGrabFailures[path] = if (errno < 0) grabNote.ifEmpty { "erro ioctl $errno" }
-                                        else "ioctl EVIOCGRAB falhou (errno=$errno)"
-                                    grabNote = mouseGrabFailures[path].orEmpty()
-                                }
+                                setMouseGrab(path, stream, true)
+                            }
+                        }
+                        if ((capabilities and NativeMouseGrab.KEYBOARD_DEVICE) != 0) {
+                            knownKeyboardPaths.add(path)
+                            if ((capabilities and NativeMouseGrab.MOUSE_DEVICE) == 0 || mouseManaged) {
+                                capturableKeyboardPaths.add(path)
+                                if (grabKeyboard) setKeyboardGrab(path, stream, true)
+                            } else {
+                                keyboardGrabFailures[path] =
+                                    "captura desativada: teclado e mouse compartilham este nó"
                             }
                         }
                     }
@@ -681,7 +886,9 @@ class ShizukuInputUserService : Binder() {
         mouseCandidateSummary = when {
             knownMousePaths.isEmpty() -> "nenhum nó evdev com botão ou movimento relativo identificado"
             else -> knownMousePaths.sorted().joinToString { path ->
-                File(path).name + if (path in mouseMotionPaths) " (REL_X/Y)" else " (botões)"
+                File(path).name +
+                    if (path in mouseMotionPaths) " (REL_X/Y, ${mouseNodeGroups[path]})"
+                    else " (botões, ${mouseNodeGroups[path]})"
             }
         }
         return devices.size
@@ -694,6 +901,7 @@ class ShizukuInputUserService : Binder() {
             if (isRunning(runGeneration)) {
                 scanDevices(runGeneration, ignored)
                 retryMouseCapture()
+                retryKeyboardCapture()
             }
         }
     }
@@ -703,46 +911,113 @@ class ShizukuInputUserService : Binder() {
         knownMousePaths.toList().forEach { path ->
             if (path in grabbedPaths) return@forEach
             val stream = devices[path] ?: return@forEach
-            val errno = try {
-                NativeMouseGrab.grab(stream.fd, true)
-            } catch (error: Throwable) {
-                grabNote = (error.cause ?: error).message ?: error.javaClass.simpleName
-                -1
-            }
-            if (errno == 0) {
-                grabbedPaths.add(path)
-                mouseGrabFailures.remove(path)
+            if (setMouseGrab(path, stream, true)) {
                 Log.i(tag, "Captura do mouse recuperada para ${File(path).name}")
-            } else {
-                mouseGrabFailures[path] = if (errno < 0) grabNote.ifEmpty { "erro ioctl $errno" }
-                    else "ioctl EVIOCGRAB falhou (errno=$errno)"
             }
         }
+    }
+
+    private fun retryKeyboardCapture() {
+        if (!running || !grabKeyboard) return
+        capturableKeyboardPaths.toList().forEach { path ->
+            if (path in grabbedKeyboardPaths) return@forEach
+            val stream = devices[path] ?: return@forEach
+            if (setKeyboardGrab(path, stream, true)) {
+                Log.i(tag, "Captura do teclado recuperada para ${File(path).name}")
+            }
+        }
+    }
+
+    private fun setKeyboardGrab(path: String, stream: FileInputStream, enabled: Boolean): Boolean {
+        if (enabled && path in grabbedPaths && grabMice) {
+            grabbedKeyboardPaths.add(path)
+            return true
+        }
+        if (!enabled && path in grabbedPaths && grabMice) {
+            grabbedKeyboardPaths.remove(path)
+            return true
+        }
+        val errno = try {
+            NativeMouseGrab.grab(stream.fd, enabled)
+        } catch (error: Throwable) {
+            grabNote = (error.cause ?: error).message ?: error.javaClass.simpleName
+            -1
+        }
+        if (errno == 0) {
+            if (enabled) grabbedKeyboardPaths.add(path) else grabbedKeyboardPaths.remove(path)
+            keyboardGrabFailures.remove(path)
+            return true
+        }
+        if (enabled) {
+            keyboardGrabFailures[path] = if (errno < 0) grabNote.ifEmpty { "erro ioctl $errno" }
+                else "ioctl EVIOCGRAB falhou (errno=$errno)"
+        } else {
+            Log.e(tag, "Não foi possível liberar captura do teclado em ${File(path).name} (errno=$errno)")
+        }
+        return false
+    }
+
+    private fun setMouseGrab(path: String, stream: FileInputStream, enabled: Boolean): Boolean {
+        if (enabled && path in grabbedKeyboardPaths && grabKeyboard) {
+            grabbedPaths.add(path)
+            return true
+        }
+        if (!enabled && path in grabbedKeyboardPaths && grabKeyboard) {
+            grabbedPaths.remove(path)
+            return true
+        }
+        val errno = try {
+            NativeMouseGrab.grab(stream.fd, enabled)
+        } catch (error: Throwable) {
+            grabNote = (error.cause ?: error).message ?: error.javaClass.simpleName
+            -1
+        }
+        if (errno == 0) {
+            if (enabled) grabbedPaths.add(path) else grabbedPaths.remove(path)
+            mouseGrabFailures.remove(path)
+            return true
+        }
+        if (enabled) {
+            mouseGrabFailures[path] = if (errno < 0) grabNote.ifEmpty { "erro ioctl $errno" }
+                else "ioctl EVIOCGRAB falhou (errno=$errno)"
+            grabNote = mouseGrabFailures[path].orEmpty()
+        } else {
+            Log.e(tag, "Não foi possível liberar a captura de ${File(path).name} (errno=$errno)")
+        }
+        return false
     }
 
     private fun refreshMouseGrab() {
-        val want = running && mouseManaged && foregroundState != 0
+        val want = running && mouseManaged && foregroundState == 1
         if (want == grabMice) return
         grabMice = want
         for (path in knownMousePaths.toList()) {
-            val stream = devices.remove(path)
-            knownMousePaths.remove(path)
-            mouseMotionPaths.remove(path)
-            grabbedPaths.remove(path)
-            mouseGrabFailures.remove(path)
-            try { stream?.close() } catch (_: Exception) { }
+            val stream = devices[path] ?: continue
+            setMouseGrab(path, stream, want)
         }
-        if (running) scanDevices(generation, intArrayOf(0))
     }
 
-    private fun mouseGrabStatus(): String = when {
-        !mouseManaged -> "sem controles de mouse no keymap"
-        knownMousePaths.isNotEmpty() && grabbedPaths.containsAll(knownMousePaths) ->
-            "assumido pelo app (${grabbedPaths.size} nó(s))"
-        grabbedPaths.isNotEmpty() -> "assumido parcialmente (${grabbedPaths.size}/${knownMousePaths.size})"
-        knownMousePaths.isNotEmpty() -> "mouse detectado, mas não capturado; mira usa os eventos REL_X/REL_Y recebidos"
-        mouseGrabFailures.isNotEmpty() -> "falha: ${mouseGrabFailures.values.first()}"
-        else -> "aguardando nó do mouse ($mouseCandidateSummary)"
+    private fun refreshKeyboardGrab() {
+        val want = running && captureKeyboard && !chatMode && foregroundState == 1
+        if (want == grabKeyboard) return
+        grabKeyboard = want
+        for (path in capturableKeyboardPaths.toList()) {
+            val stream = devices[path] ?: continue
+            setKeyboardGrab(path, stream, want)
+        }
+    }
+
+    private fun mouseGrabStatus(): String {
+        val capturedGroups = capturedMouseGroups()
+        return when {
+            !mouseManaged -> "sem controles de mouse no keymap"
+            capturedGroups.isNotEmpty() ->
+                "${capturedGroups.size} dispositivo(s) com movimento capturado"
+            grabbedPaths.isNotEmpty() -> "assumido parcialmente (${grabbedPaths.size}/${knownMousePaths.size} nó(s))"
+            knownMousePaths.isNotEmpty() -> "mouse detectado, mas não capturado; mira usa os eventos REL_X/REL_Y recebidos"
+            mouseGrabFailures.isNotEmpty() -> "falha: ${mouseGrabFailures.values.first()}"
+            else -> "aguardando nó do mouse ($mouseCandidateSummary)"
+        }
     }
 
     /** Reads struct input_event records: timeval (2 longs), type u16, code u16, value s32. */
@@ -754,6 +1029,10 @@ class ShizukuInputUserService : Binder() {
         val view = ByteBuffer.wrap(buffer).order(ByteOrder.nativeOrder())
         var relativeX = 0
         var relativeY = 0
+        var wheelVertical = 0
+        var wheelHorizontal = 0
+        var wheelVerticalHiRes = 0
+        var wheelHorizontalHiRes = 0
         try {
             while (isRunning(runGeneration)) {
                 var filled = 0
@@ -766,10 +1045,28 @@ class ShizukuInputUserService : Binder() {
                 val code = view.getShort(offset + 2).toInt() and 0xFFFF
                 val value = view.getInt(offset + 4)
                 when (type) {
-                    EV_KEY -> if (value == 0 || value == 1) {
+                    EV_KEY -> {
                         val name = LINUX_KEYS[code]
                         val mouseInput = path in knownMousePaths || code in BTN_LEFT..BTN_TASK
-                        if (name != null) onKey(name, value == 1, mouseInput && path in grabbedPaths, path)
+                        val keyboardInput = path in knownKeyboardPaths && code !in BTN_LEFT..BTN_TASK
+                        if (value == 2) {
+                            if (captureKeyboard && keyboardInput && path in grabbedKeyboardPaths &&
+                                name != null && name !in bindings && !chatMode
+                            ) {
+                                injector?.injectKeyRepeat(name)
+                            }
+                        } else if ((value == 0 || value == 1) && name != null) {
+                            onKey(
+                                name,
+                                value == 1,
+                                mouseInput && path in grabbedPaths,
+                                keyboardInput && (
+                                    path in grabbedKeyboardPaths ||
+                                        (path in grabbedPaths && !captureKeyboard)
+                                    ),
+                                path
+                            )
+                        }
                     }
                     EV_REL -> when (code) {
                         REL_X -> {
@@ -780,11 +1077,26 @@ class ShizukuInputUserService : Binder() {
                             noteMouseMotionPath(path)
                             relativeY += value
                         }
+                        REL_WHEEL -> wheelVertical += value
+                        REL_HWHEEL -> wheelHorizontal += value
+                        REL_WHEEL_HI_RES -> wheelVerticalHiRes += value
+                        REL_HWHEEL_HI_RES -> wheelHorizontalHiRes += value
                     }
                     EV_SYN -> if (code == SYN_REPORT) {
                         if (relativeX != 0 || relativeY != 0) onMouseMove(path, relativeX, relativeY)
+                        val vertical = if (wheelVerticalHiRes != 0) wheelVerticalHiRes / 120f
+                            else wheelVertical.toFloat()
+                        val horizontal = if (wheelHorizontalHiRes != 0) wheelHorizontalHiRes / 120f
+                            else wheelHorizontal.toFloat()
+                        if (vertical != 0f || horizontal != 0f) {
+                            onMouseScroll(path, vertical, horizontal)
+                        }
                         relativeX = 0
                         relativeY = 0
+                        wheelVertical = 0
+                        wheelHorizontal = 0
+                        wheelVerticalHiRes = 0
+                        wheelHorizontalHiRes = 0
                     }
                 }
             }
@@ -795,7 +1107,9 @@ class ShizukuInputUserService : Binder() {
                 val releasedKeys = synchronized(lock) {
                     pressedKeySources.filterValues { path in it }.keys.toList()
                 }
-                releasedKeys.forEach { onKey(it, false, true, path) }
+                releasedKeys.forEach {
+                    onKey(it, false, path in grabbedPaths, path in grabbedKeyboardPaths, path)
+                }
             }
             if (devices[path] === stream) {
                 devices.remove(path)
@@ -809,10 +1123,71 @@ class ShizukuInputUserService : Binder() {
     private fun ensureForegroundWatcher() {
         if (watcherStarted) return
         watcherStarted = true
+        registerTaskStackListener()
         Thread({ watchForeground() }, "NexoPlay-Foreground").apply { isDaemon = true }.start()
     }
 
-    /** One long-lived thread: is the game in front? 1 = yes, 0 = no, 2 = could not tell. */
+    private fun registerTaskStackListener() {
+        try {
+            val listenerClass = Class.forName("android.app.ITaskStackListener")
+            val manager = Class.forName("android.app.ActivityTaskManager")
+                .getDeclaredMethod("getService")
+                .apply { isAccessible = true }
+                .invoke(null)
+            val callbackBinder = object : Binder() {
+                override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
+                    if (code == IBinder.INTERFACE_TRANSACTION) {
+                        reply?.writeString(listenerClass.name)
+                        return true
+                    }
+                    return try {
+                        data.enforceInterface(listenerClass.name)
+                        requestForegroundCheck()
+                        true
+                    } catch (error: RuntimeException) {
+                        Log.w(tag, "Callback ITaskStackListener inválido", error)
+                        false
+                    }
+                }
+            }
+            val listener = Proxy.newProxyInstance(
+                listenerClass.classLoader,
+                arrayOf(listenerClass)
+            ) { proxy, method, args ->
+                when (method.name) {
+                    "asBinder" -> callbackBinder
+                    "toString" -> "NexoPlayTaskStackListener"
+                    "hashCode" -> System.identityHashCode(proxy)
+                    "equals" -> proxy === args?.firstOrNull()
+                    else -> null
+                }
+            }
+            val register = manager.javaClass.methods.firstOrNull {
+                it.name == "registerTaskStackListener" && it.parameterTypes.size == 1
+            } ?: error("registerTaskStackListener indisponível")
+            register.invoke(manager, listener)
+            taskStackListenerBinder = callbackBinder
+            taskStackListenerStatus = "registrado"
+            requestForegroundCheck()
+        } catch (error: Throwable) {
+            taskStackListenerStatus = "indisponível: ${error.cause?.message ?: error.message ?: error.javaClass.simpleName}"
+            Log.w(tag, "ITaskStackListener indisponível; usando consulta de fallback", error)
+        }
+    }
+
+    private fun requestForegroundCheck() {
+        val game = watchedPackage
+        if (game.isEmpty() || !foregroundCheckQueued.compareAndSet(false, true)) return
+        foregroundExecutor.schedule({
+            try {
+                if (game == watchedPackage) applyForeground(readForegroundState(game))
+            } finally {
+                foregroundCheckQueued.set(false)
+            }
+        }, 50, TimeUnit.MILLISECONDS)
+    }
+
+    /** Event-driven foreground checks plus a slower fallback poll. */
     private fun watchForeground() {
         while (true) {
             val game = watchedPackage
@@ -820,34 +1195,38 @@ class ShizukuInputUserService : Binder() {
                 try { Thread.sleep(500) } catch (_: InterruptedException) { return }
                 continue
             }
-            val state = try {
-                val process = ProcessBuilder("/system/bin/dumpsys", "activity", "activities")
-                    .redirectErrorStream(true).start()
-                val text = process.inputStream.bufferedReader().use { it.readText() }
-                process.waitFor()
-                val resumed = text.lineSequence().filter {
-                    it.contains("ResumedActivity", ignoreCase = true) ||
-                        it.contains("topResumedActivity", ignoreCase = true) ||
-                        it.contains("mResumedActivity", ignoreCase = true)
-                }.toList()
-                when {
-                    resumed.isEmpty() -> 2
-                    resumed.any { it.contains("$game/") } -> 1
-                    else -> 0
-                }
-            } catch (error: Exception) {
-                Log.w(tag, "Não foi possível conferir o jogo ativo", error)
-                2
-            }
+            val state = readForegroundState(game)
             if (game == watchedPackage) applyForeground(state)
-            try { Thread.sleep(if (state == 0) 1200 else 900) } catch (_: InterruptedException) { return }
+            val fallbackInterval = if (taskStackListenerStatus == "registrado") 5000L else 1500L
+            try { Thread.sleep(fallbackInterval) } catch (_: InterruptedException) { return }
         }
+    }
+
+    private fun readForegroundState(game: String): Int = try {
+        val process = ProcessBuilder("/system/bin/dumpsys", "activity", "activities")
+            .redirectErrorStream(true).start()
+        val resumed = process.inputStream.bufferedReader().useLines { lines ->
+            lines.firstOrNull {
+                it.contains("topResumedActivity", ignoreCase = true) ||
+                    it.contains("mResumedActivity", ignoreCase = true) ||
+                    it.contains("ResumedActivity", ignoreCase = true)
+            }
+        }
+        process.destroy()
+        when {
+            resumed == null -> 2
+            resumed.contains("$game/") -> 1
+            else -> 0
+        }
+    } catch (error: Exception) {
+        Log.w(tag, "Não foi possível conferir o jogo ativo", error)
+        2
     }
 
     private fun applyForeground(state: Int) {
         val wasInFront = foreground
         foregroundState = state
-        val inFront = state != 0
+        val inFront = state == 1
         foreground = inFront
         if (wasInFront && !inFront) {
             // Left the game: drop every virtual finger so nothing stays pressed.
@@ -859,6 +1238,8 @@ class ShizukuInputUserService : Binder() {
             }
         }
         refreshMouseGrab()
+        refreshKeyboardGrab()
+        publishCursorState()
     }
 
     // ---------------------------------------------------------------- mouse FPS and own cursor
@@ -877,6 +1258,60 @@ class ShizukuInputUserService : Binder() {
             if (!mouseMotionFlushScheduled) {
                 scheduleMouseMotionFlush(generation)
             }
+        }
+    }
+
+    private fun onMouseScroll(path: String, vertical: Float, horizontal: Float) {
+        if (!foreground || path !in grabbedPaths || (vertical == 0f && horizontal == 0f)) return
+        val touch = injector ?: return
+        var injectedVertical = 0f
+        var injectedHorizontal = 0f
+        if (vertical != 0f) {
+            val key = if (vertical > 0f) "MOUSE_WHEEL_UP" else "MOUSE_WHEEL_DOWN"
+            val mapped = bindings[key].orEmpty()
+            if (mapped.isEmpty()) {
+                injectedVertical = vertical
+            } else {
+                val steps = synchronized(lock) {
+                    wheelRemainderVertical += vertical
+                    wheelRemainderVertical.toInt().also { wheelRemainderVertical -= it }
+                }
+                repeat(kotlin.math.abs(steps).coerceAtMost(10)) {
+                    triggerWheelBindings(key)
+                }
+            }
+        }
+        if (horizontal != 0f) {
+            val key = if (horizontal > 0f) "MOUSE_WHEEL_RIGHT" else "MOUSE_WHEEL_LEFT"
+            val mapped = bindings[key].orEmpty()
+            if (mapped.isEmpty()) {
+                injectedHorizontal = horizontal
+            } else {
+                val steps = synchronized(lock) {
+                    wheelRemainderHorizontal += horizontal
+                    wheelRemainderHorizontal.toInt().also { wheelRemainderHorizontal -= it }
+                }
+                repeat(kotlin.math.abs(steps).coerceAtMost(10)) {
+                    triggerWheelBindings(key)
+                }
+            }
+        }
+        if (injectedVertical != 0f || injectedHorizontal != 0f) {
+            touch.injectScroll(injectedVertical, injectedHorizontal, cursorX, cursorY)
+        }
+    }
+
+    private fun triggerWheelBindings(key: String) {
+        if (key == emergencyKey) {
+            Log.w(tag, "Tecla de emergência acionada pela roda do mouse")
+            stop()
+            return
+        }
+        bindings[key].orEmpty().forEach { binding ->
+            val delay = binding.control.responseMs.toLong()
+            if (delay == 0L) performBinding(binding, true)
+            else responseExecutor.schedule({ performBinding(binding, true) }, delay, TimeUnit.MILLISECONDS)
+            responseExecutor.schedule({ performBinding(binding, false) }, delay + 80L, TimeUnit.MILLISECONDS)
         }
     }
 
@@ -940,6 +1375,7 @@ class ShizukuInputUserService : Binder() {
                 if (inputDeltaX == 0f && inputDeltaY == 0f) return
                 moveCursor(inputDeltaX, inputDeltaY)
                 if (cursorFinger >= 0) injector?.move(cursorFinger, cursorX, cursorY)
+                publishCursorState()
             }
         }
     }
@@ -991,13 +1427,14 @@ class ShizukuInputUserService : Binder() {
             }
             if (cursorFinger >= 0) touch?.cancel(cursorFinger)
             cursorFinger = -1
-            cursorX = width / 2f
-            cursorY = height / 2f
+            if (cursorRightFinger >= 0) touch?.cancel(cursorRightFinger)
+            cursorRightFinger = -1
             pendingMouseDeltaX = 0.0
             pendingMouseDeltaY = 0.0
             smoothedLookDeltaX = 0f
             smoothedLookDeltaY = 0f
             mouseLookActive = active
+            publishCursorState()
             Log.i(tag, if (active) "Mouse FPS: mira ativa" else "Mouse FPS: cursor próprio")
         }
         if (!active) retryMouseCapture()
@@ -1011,8 +1448,71 @@ class ShizukuInputUserService : Binder() {
     private fun cursorVisible(): Boolean =
         running && foreground && mouseManaged && !mouseLookActive && mouseCaptureComplete()
 
-    private fun mouseCaptureComplete(): Boolean =
-        knownMousePaths.isNotEmpty() && grabbedPaths.containsAll(knownMousePaths)
+    private fun capturedMouseGroups(): Set<String> =
+        mouseNodeGroups.entries
+            .groupBy({ it.value }, { it.key })
+            .filterValues { paths -> paths.any { it in mouseMotionPaths && it in grabbedPaths } }
+            .keys
+
+    private fun mouseCaptureComplete(): Boolean = capturedMouseGroups().isNotEmpty()
+
+    private fun startCursorUpdates(socketName: String, runGeneration: Int) {
+        if (socketName.isBlank()) return
+        Thread({
+            while (isRunning(runGeneration)) {
+                val socket = android.net.LocalSocket()
+                try {
+                    socket.connect(
+                        android.net.LocalSocketAddress(
+                            socketName,
+                            android.net.LocalSocketAddress.Namespace.ABSTRACT
+                        )
+                    )
+                    cursorSocket = socket
+                    val output = java.io.DataOutputStream(socket.outputStream)
+                    while (isRunning(runGeneration)) {
+                        val update = cursorUpdates.poll(500, TimeUnit.MILLISECONDS) ?: continue
+                        output.writeInt(update.x)
+                        output.writeInt(update.y)
+                        output.writeBoolean(update.visible)
+                        output.writeBoolean(update.mouseLookActive)
+                        output.flush()
+                    }
+                } catch (error: Exception) {
+                    if (isRunning(runGeneration)) {
+                        Log.w(tag, "Canal de cursor desconectado; tentando novamente", error)
+                    }
+                } finally {
+                    if (cursorSocket === socket) cursorSocket = null
+                    try { socket.close() } catch (_: Exception) { }
+                }
+                if (isRunning(runGeneration)) {
+                    try { Thread.sleep(250) } catch (_: InterruptedException) { return@Thread }
+                }
+            }
+        }, "NexoPlay-CursorPush").apply { isDaemon = true }.start()
+        publishCursorState()
+    }
+
+    private fun publishCursorState() {
+        val update = CursorUpdate(
+            cursorX.toInt(),
+            cursorY.toInt(),
+            cursorVisible(),
+            mouseLookActive
+        )
+        if (!cursorUpdates.offer(update)) {
+            cursorUpdates.poll()
+            cursorUpdates.offer(update)
+        }
+    }
+
+    private data class CursorUpdate(
+        val x: Int,
+        val y: Int,
+        val visible: Boolean,
+        val mouseLookActive: Boolean
+    )
 
     private fun noteMouseMotionPath(path: String) {
         if (!mouseManaged) return
@@ -1032,13 +1532,24 @@ class ShizukuInputUserService : Binder() {
             2 -> "não deu para saber"
             else -> "ainda não verificado"
         }
+        lines += "Foco por evento: $taskStackListenerStatus"
         val names = devices.keys.map { File(it).name }.sorted()
         lines += "Entrada lida: " + if (names.isEmpty()) "nenhum dispositivo" else names.joinToString()
         lines += "Cursor próprio do app: ${mouseGrabStatus()}"
         lines += "Modo do mouse: " + if (mouseLookActive) "mira ativa" else "cursor (mira suspensa)"
+        lines += "Tecla de emergência: $emergencyKey"
+        lines += "Captura do teclado: " + when {
+            !captureKeyboard -> "desativada"
+            chatMode -> "modo chat (liberado)"
+            grabbedKeyboardPaths.isNotEmpty() -> "ativa (${grabbedKeyboardPaths.size} nó(s))"
+            else -> "aguardando ou sem permissão"
+        }
         lines += "Nós de mouse: $mouseCandidateSummary"
         if (mouseGrabFailures.isNotEmpty()) lines += "Falhas de detecção/captura: " +
             mouseGrabFailures.entries.sortedBy { it.key }.joinToString { "${File(it.key).name}: ${it.value}" }
+        if (keyboardGrabFailures.isNotEmpty()) lines += "Falhas de captura do teclado: " +
+            keyboardGrabFailures.entries.sortedBy { it.key }
+                .joinToString { "${File(it.key).name}: ${it.value}" }
         lines += "Toques: " + (injector?.summary() ?: "motor parado")
         lines += "Teclas mapeadas: ${bindings.size}"
         lines += "Último movimento do mouse: " + if (lastMouseMoveAt == 0L) {
@@ -1056,9 +1567,20 @@ class ShizukuInputUserService : Binder() {
 
     // ---------------------------------------------------------------- key handling
 
-    private fun onKey(key: String, down: Boolean, capturedMouseInput: Boolean, sourcePath: String) {
+    private fun onKey(
+        key: String,
+        down: Boolean,
+        capturedMouseInput: Boolean,
+        capturedKeyboardInput: Boolean,
+        sourcePath: String
+    ) {
         lastKeyText = "$key ${if (down) "↓" else "↑"}"
         lastKeyAt = SystemClock.elapsedRealtime()
+        if (down && key == emergencyKey) {
+            Log.w(tag, "Tecla de emergência acionada; liberando entradas e pausando o motor")
+            stop()
+            return
+        }
         if (key.startsWith("MOUSE_") && !capturedMouseInput && down) return
         val isTransition = synchronized(lock) {
             if (down) {
@@ -1077,6 +1599,39 @@ class ShizukuInputUserService : Binder() {
             }
         }
         if (!isTransition) return
+        if (captureKeyboard && key == "ENTER") {
+            if (!down && chatMode) {
+                if (chatEnterReleasePending) chatEnterReleasePending = false
+                else {
+                    chatMode = false
+                    refreshKeyboardGrab()
+                }
+            } else if (down && chatMode) {
+                return
+            } else if (down && capturedKeyboardInput) {
+                chatMode = true
+                chatEnterReleasePending = true
+                synchronized(lock) {
+                    bindings.values.flatten().forEach { it.control.reset() }
+                    injector?.releaseAll()
+                }
+                refreshKeyboardGrab()
+                injector?.let { touch ->
+                    touch.injectKey("ENTER", true)
+                    responseExecutor.schedule(
+                        { touch.injectKey("ENTER", false) },
+                        40,
+                        TimeUnit.MILLISECONDS
+                    )
+                }
+            }
+            return
+        }
+        if (chatMode) return
+        if (capturedKeyboardInput && key !in bindings && !key.startsWith("MOUSE_")) {
+            injector?.injectKey(key, down)
+            return
+        }
         val mouseLookShortcut = bindings[key].orEmpty().any { it.control.type == "MOUSE_LOOK" }
         val mouseDragShortcut = bindings[key].orEmpty().any { it.control.type == "MOUSE_DRAG" }
         if (key == "MOUSE_LEFT" && !mouseLookActive && !mouseLookShortcut && !mouseDragShortcut) {
@@ -1089,6 +1644,27 @@ class ShizukuInputUserService : Binder() {
                     cursorFinger = -1
                 }
             }
+            return
+        }
+        if (!mouseLookActive && key == "MOUSE_RIGHT" && bindings[key].isNullOrEmpty()) {
+            if (rightClickMode == "LONG_PRESS") {
+                synchronized(lock) {
+                    val touch = injector ?: return
+                    if (down && cursorRightFinger < 0) {
+                        cursorRightFinger = touch.down(cursorX, cursorY)
+                    } else if (!down && cursorRightFinger >= 0) {
+                        touch.up(cursorRightFinger)
+                        cursorRightFinger = -1
+                    }
+                }
+            } else if (down) {
+                injector?.injectKey("BACK", true)
+                responseExecutor.schedule({ injector?.injectKey("BACK", false) }, 40L, TimeUnit.MILLISECONDS)
+            }
+            return
+        }
+        if (!mouseLookActive && key == "MOUSE_MIDDLE" && bindings[key].isNullOrEmpty()) {
+            if (down) injector?.tap(cursorX, cursorY)
             return
         }
         // In aim mode MOUSE_LEFT stays mapped to its held touch while Mouse FPS moves a separate finger.
@@ -1354,6 +1930,10 @@ class ShizukuInputUserService : Binder() {
         const val SYN_REPORT = 0
         const val REL_X = 0
         const val REL_Y = 1
+        const val REL_HWHEEL = 6
+        const val REL_WHEEL = 8
+        const val REL_HWHEEL_HI_RES = 11
+        const val REL_WHEEL_HI_RES = 12
         const val MOUSE_LOOK_SCALE = 1.0f
         const val DEFAULT_LOOK_SMOOTHING = 35
         const val MAX_LOOK_DELTA_SMOOTHING = 0.35f
@@ -1449,8 +2029,10 @@ class ShizukuInputUserService : Binder() {
 private object NativeMouseGrab {
     const val MOUSE_DEVICE = 1
     const val MOUSE_MOTION = 2
+    const val KEYBOARD_DEVICE = 4
 
     init { System.loadLibrary("mapeador_input") }
     external fun capabilities(fd: FileDescriptor): Int
+    external fun identity(fd: FileDescriptor): String?
     external fun grab(fd: FileDescriptor, enabled: Boolean): Int
 }

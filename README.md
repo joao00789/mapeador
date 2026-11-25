@@ -26,19 +26,28 @@ A tecla configurável também inclui Arrasto Mouse: mantenha a tecla pressionada
 o mouse para arrastar um toque virtual. Dê dois toques numa área vazia do editor para
 adicionar um controle Toque; o tamanho dos indicadores e o raio do joystick podem ser
 ajustados individualmente.
-A seta própria aparece ao iniciar o jogo, mesmo sem um componente Mouse FPS no keymap.
+A seta própria aparece quando há controle de mouse e o nó de movimento foi capturado.
 Com Mouse FPS, a mira começa ativa e a tecla configurada (Alt esquerdo por padrão)
-alterna entre mira e cursor suspenso. Ajuste sensibilidades X/Y (0–100) e suavização
-(0–100) no marcador Mouse FPS.
+alterna entre mira e cursor suspenso, preservando a posição da seta. Ajuste sensibilidades
+X/Y (0–100) e suavização (0–100) no marcador Mouse FPS.
 
-Mouse próprio: o app tenta capturar os nós USB do mouse enquanto o jogo está na frente,
-impedindo o Android de mover seu cursor por conta própria. No modo cursor, o botão esquerdo
-gera um toque real na posição da seta do app; no modo mira, o movimento gera arrasto de dedo
-na tela. Os deltas são agrupados em quadros curtos para evitar saturação de eventos, sem
-descartar movimento ao recentralizar o toque. Ao sair do jogo, a captura é liberada. Se o
-Android bloquear a captura, a mira ainda tenta usar os eventos relativos recebidos, mas o
-cursor do sistema pode continuar visível. O menu Diagnóstico informa se o nó foi detectado
-e capturado. O teclado continua sendo lido independentemente da captura do mouse.
+Mouse próprio: o app captura o mouse somente quando o keymap usa controles de mouse e o jogo
+está confirmado em primeiro plano. No modo cursor, o botão esquerdo toca na posição da seta;
+o direito envia Voltar por padrão (configurável para toque longo) e o botão do meio toca nessa
+posição. Um mapeamento explícito dos botões substitui o padrão. O cursor usa uma janela opaca própria e recebe posição por socket
+local; sua seta fica sobre o painel. A tecla de Mouse FPS alterna MIRA/CURSOR sem recentralizar
+a posição do cursor.
+
+A roda vertical/horizontal é injetada no jogo quando não tiver ação mapeada, e pode ser capturada
+no editor para disparar um controle. A tecla de emergência é configurável (padrão F12) e libera
+as entradas, pausando o motor. Em **Teclado: normal/capturado**, a captura do teclado é opcional;
+quando ativada, teclas sem mapeamento são repassadas e Enter libera o teclado para chat até ser
+solto. O foco do jogo é acompanhado por callback interno quando disponível e por polling fallback;
+o diagnóstico informa se a API interna foi registrada.
+
+Esta versão ainda não foi validada em aparelho. Captura evdev, injeção, janelas sobrepostas,
+socket local e APIs internas de foco precisam de teste em dispositivos e versões Android/OEM
+suportadas. Se o Android bloquear `EVIOCGRAB`, a captura pode falhar; consulte Diagnóstico.
 
 ## Gerar o APK
 
@@ -47,6 +56,19 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 `nexoplay-debug-apk` na seção **Artifacts** da execução.
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
+
+## Novidades da 0.7.0
+
+- Captura do mouse condicional, identificada por nó de movimento, com `EVIOCGRAB` corrigido
+  e alternância sem recriar as threads de leitura.
+- Detecção de foco via `ITaskStackListener` refletido e fallback; estados desconhecidos liberam
+  mouse e toques para evitar entrada presa.
+- Cursor independente em janela própria, posição enviada por socket local, indicador MIRA/CURSOR
+  e posição preservada ao alternar modos.
+- Scroll injetado ou mapeável. Tecla de emergência configurável (F12), captura opcional do
+  teclado com repasse de teclas sem mapa e modo chat por Enter.
+- Clique direito configurável entre Voltar e toque longo; botão do meio toca na posição do
+  cursor. Controles mapeados substituem esses padrões.
 
 ## Novidades da 0.6.6
 

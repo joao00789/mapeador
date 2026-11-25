@@ -27,29 +27,56 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
    - JOYSTICK: toque no centro e MOVE até `rangePx` na direção das teclas (WASD ou Setas).
    - MOUSE_DRAG: mantém um toque no ponto configurado enquanto a tecla está pressionada e
      aplica os deltas físicos do mouse a esse dedo.
-4. Só age com o jogo em primeiro plano (`dumpsys activity activities`, a cada 1 s; se o formato
-   for desconhecido, não bloqueia). Ao perder o foco, solta todos os toques.
+4. Só age com o jogo confirmado em primeiro plano. O serviço tenta observar mudanças de tarefa
+   com `ITaskStackListener` via reflexão e mantém `dumpsys activity activities` como fallback
+   (5 s quando registrado; 1,5 s se indisponível). Se não confirmar o foco, solta toques e libera capturas.
 5. Motor pausado enquanto o editor está aberto; reinicia ao fechar o editor ou ao mudar o mapeamento.
 6. O serviço devolve uma mensagem de status que o app mostra em Toast.
 
-## Visibilidade e mouse (0.5.0)
-- O serviço Shizuku mantém UMA thread de "jogo na frente?" (dumpsys, ~1 s) que roda mesmo sem
-  teclas mapeadas. O app consulta o estado (`queryState`, transação STATE) a cada 700 ms e
-  esconde (visibility GONE) bolha, indicadores e editor quando o jogo não está na frente.
-- Mouse FPS (`MOUSE_LOOK`): o serviço lê eventos do hub USB via Shizuku sem `EVIOCGRAB`.
-  A tecla do controle (padrão `ALT_LEFT`) alterna MIRA (arrasto contínuo a partir do marcador,
-  limitado apenas pelas bordas reais da tela) e CURSOR. Ao suspender, solta o dedo; ao retomar,
-  cria um novo na âncora. O serviço tenta aplicar um `PointerIcon` próprio
-  globalmente em versões Android que ainda oferecem essa API oculta; quando indisponível, o app
-  desenha uma seta própria no overlay. O Android recente não oferece API pública para trocar a
-  seta global de outro app, então o fallback visual não consegue ocultar a seta nativa.
-- Menu da bolha → Diagnóstico (`buildStatus` no serviço Shizuku): usar para descobrir por que algo não funciona.
+## Visibilidade e mouse (desde 0.5.0; estado atual 0.7.0)
+- O serviço observa foco por `ITaskStackListener` refletido e mantém polling de fallback;
+  o app consulta o estado a cada 250 ms quando o cursor está visível e 750 ms quando oculto.
+  Só o estado confirmado como foreground mantém captura; estados desconhecidos liberam entradas.
+- Mouse FPS (`MOUSE_LOOK`): a tecla configurada (padrão `ALT_LEFT`) alterna MIRA e CURSOR.
+  A mira injeta movimento relativo; suspender solta o dedo. O cursor do app preserva a posição,
+  é atualizado por socket local e desenhado em janela própria. Android ainda pode manter seu
+  ponteiro nativo se o fabricante bloquear `EVIOCGRAB`.
+- Captura mouse/teclado usa `EVIOCGRAB` sem fechar os streams. Mouse é capturado apenas quando
+  o keymap tem controle de mouse; captura de teclado é opcional. O menu → Diagnóstico mostra
+  disponibilidade da API de foco, dispositivos, estado de captura e erros.
+
+## Captura e teclado (0.7.0)
+- O serviço só captura o mouse se houver controle Mouse FPS, Arrasto Mouse, tecla de mouse ou
+  tecla de emergência configurada como botão do mouse. A captura é alternada em cada fd sem
+  fechar/reabrir os streams. `EVIOCGRAB` recebe o valor inteiro (0/1), e os nós são agrupados
+  por `EVIOCGPHYS`/`EVIOCGUNIQ` com fallback para identidade do dispositivo.
+- O cursor considera capturado o nó REL_X/REL_Y, mesmo quando outros nós do mouse falham.
+  Sua posição chega pelo socket local e é desenhada em janela própria opaca, acima do painel;
+  o estado mostra o indicador MIRA/CURSOR. Suspender/retomar preserva a última posição do cursor.
+- A roda vertical/horizontal é injetada como `ACTION_SCROLL` quando não houver ação mapeada.
+  É possível capturar a roda no editor e associá-la a um controle. No modo cursor, o botão
+  direito envia Voltar ou segura um toque longo (opção do editor), e o botão do meio toca
+  na posição do cursor; um mapeamento explícito desses botões substitui o padrão.
+- O editor permite capturar uma tecla de emergência (padrão F12), que libera entradas e pausa
+  o motor. A captura do teclado é opcional e vem desativada: quando ativada, teclas sem mapa
+  são repassadas por KeyEvent; Enter libera o teclado para digitação até ser solto.
+- O foco é observado por callback interno via reflexão, com fallback de polling. A disponibilidade
+  e assinatura das APIs internas variam por Android/OEM; se o registro falhar, o diagnóstico
+  informa o motivo e o polling continua. É necessário validar em aparelho.
 
 ## Tamanhos (FloatingBubbleService.kt, companion)
 `KEY_SIZE_DP = 40` (ajustável por controle entre 50% e 200%), `JOYSTICK_SIZE_DP = 88`
 (× raio ajustável entre 20% e 150%), `JOYSTICK_MIN_DP = 24`.
 
 ## Histórico
+- 0.7.0 — Captura do mouse condicionada a controles de mouse; identificação/agrupamento de nós
+  físicos, captura considerada pelo nó REL_X/REL_Y, `EVIOCGRAB` corrigido e alternância sem
+  reabrir streams. Foco por `ITaskStackListener` refletido com fallback e liberação segura ao
+  perder foco. Cursor separado em janela própria e atualizado por socket local, sem polling Binder
+  a 16 ms; posição preservada e indicador MIRA/CURSOR. Scroll passa a ser injetado/mapeável.
+  Inclui tecla de emergência configurável (F12), captura opcional do teclado, repasse de teclas
+  sem mapa e modo chat por Enter; no cursor, botão direito configurável (Voltar/toque longo)
+  e botão do meio = toque.
 - 0.6.6 — Sensibilidades X/Y e velocidade do cursor passam a usar escala 0–100;
   mapeamentos em formatos anteriores são convertidos para manter a resposta equivalente.
   Suavização da mira é limitada sem drenar deltas em quadros posteriores, reduzindo a
@@ -95,6 +122,8 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 - 0.3.0 — Renomeado para B13 MAUSE PRO, tema vermelho, keymap só pela bolha.
 
 ## Limitações conhecidas / ideias
-- O mouse USB continua clicando no jogo por conta própria (não há "grab" do dispositivo).
-- Macros, mira virtual, controle de recuo, scroll e modos de visão ainda não existem.
-- Se o Shizuku rodar como ADB shell e o fabricante bloquear `/dev/input`, o app avisa.
+- Captura de entradas, injeção, socket do cursor e APIs internas de foco ainda precisam de
+  teste em aparelho nas versões Android/OEM suportadas; APIs ocultas podem não estar disponíveis.
+- Se o Shizuku rodar como ADB shell e o fabricante bloquear `/dev/input` ou `INJECT_EVENTS`,
+  o app avisa no diagnóstico.
+- Macros e controle de recuo continuam fora do escopo.
