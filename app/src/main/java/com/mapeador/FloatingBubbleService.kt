@@ -85,24 +85,6 @@ private fun JSONObject.sensitivityValue(name: String): Float {
     }
 }
 
-private fun publishPushedCursor(state: ShizukuInputBridge.EngineState) {
-    synchronized(cursorPushLock) {
-        pendingCursorState = state
-        if (cursorUpdatePosted) return
-        cursorUpdatePosted = true
-    }
-    handler.post {
-        val latest = synchronized(cursorPushLock) {
-            pendingCursorState.also {
-                pendingCursorState = null
-                cursorUpdatePosted = false
-            }
-        } ?: return@post
-        lastEngineState = latest
-        updateCursor(latest)
-    }
-}
-
 /** The app's own mouse arrow. Its tip is the top-left corner of the view. */
 private class CursorView(context: android.content.Context) : View(context) {
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -607,6 +589,24 @@ class FloatingBubbleService : Service() {
         } catch (error: RuntimeException) {
             Log.w(TAG, "Não foi possível exibir o indicador do modo do mouse", error)
             indicator.visibility = View.GONE
+        }
+    }
+
+    private fun publishPushedCursor(state: ShizukuInputBridge.EngineState) {
+        synchronized(cursorPushLock) {
+            pendingCursorState = state
+            if (cursorUpdatePosted) return
+            cursorUpdatePosted = true
+        }
+        handler.post {
+            val latest = synchronized(cursorPushLock) {
+                pendingCursorState.also {
+                    pendingCursorState = null
+                    cursorUpdatePosted = false
+                }
+            } ?: return@post
+            lastEngineState = latest
+            updateCursor(latest)
         }
     }
 
@@ -2371,19 +2371,19 @@ class FloatingBubbleService : Service() {
                     responseMs = item.optInt("responseMs", 0).coerceIn(0, 300)
                 )
             }
-
-            private fun getEmergencyKey(): String =
-                getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(EMERGENCY_KEY, "F12").orEmpty()
-
-            private fun rightClickLabel(): String =
-                if (getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-                        .getString(RIGHT_CLICK_MODE, "BACK") == "LONG_PRESS"
-                ) "Toque longo" else "Voltar"
         } catch (error: JSONException) {
             Log.e(TAG, "Não foi possível ler os controles salvos", error)
             emptyList()
         }
     }
+
+    private fun getEmergencyKey(): String =
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE).getString(EMERGENCY_KEY, "F12").orEmpty()
+
+    private fun rightClickLabel(): String =
+        if (getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .getString(RIGHT_CLICK_MODE, "BACK") == "LONG_PRESS"
+        ) "Toque longo" else "Voltar"
 
     private fun writeControls(controls: List<OverlayControl>) {
         val saved = try {

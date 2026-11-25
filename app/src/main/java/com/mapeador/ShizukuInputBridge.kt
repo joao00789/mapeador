@@ -53,8 +53,6 @@ object ShizukuInputBridge {
             callback(false, lastError)
             return
         }
-        private val cursorUpdates = java.util.concurrent.LinkedBlockingDeque<CursorUpdate>(1)
-        @Volatile private var cursorSocket: android.net.LocalSocket? = null
         if (Shizuku.checkSelfPermission() != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             lastError = "B13 MAUSE PRO ainda não foi autorizado no Shizuku"
             callback(false, lastError)
@@ -617,6 +615,8 @@ class ShizukuInputUserService : Binder() {
     @Volatile private var lastMouseMoveAt = 0L
     private var cursorFinger = -1
     private var cursorRightFinger = -1
+    private val cursorUpdates = java.util.concurrent.LinkedBlockingDeque<CursorUpdate>(1)
+    @Volatile private var cursorSocket: android.net.LocalSocket? = null
     private val devices = ConcurrentHashMap<String, FileInputStream>()
     private val swipeExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "NexoPlay-Swipe").apply { isDaemon = true }
