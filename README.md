@@ -2,7 +2,7 @@
 
 Primeira versão em desenvolvimento do B13 MAUSE PRO, um mapeador Android com launcher
 de jogos, editor de controles sobreposto e botão flutuante. A tela Iniciar jogo abre por
-padrão (abas: Iniciar jogo, Keymap, Configurações); selecione um app instalado e toque em **Iniciar** para abrir o jogo com a
+padrão (abas: Iniciar jogo e Configurações); selecione um app instalado e toque em **Iniciar** para abrir o jogo com a
 bolha do B13 MAUSE PRO.
 
 Durante o jogo, toque na bolha B13 MAUSE PRO e escolha **Editar keymap neste jogo**.
@@ -56,6 +56,16 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 `nexoplay-debug-apk` na seção **Artifacts** da execução.
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
+
+## Novidades da 0.7.1
+
+- Corrigido o cursor duplicado após abrir/fechar o editor: a janela própria é ocultada e
+  reutilizada em vez de perder sua referência. As configurações agora aparecem acima da
+  barra do editor e usam cartões menores; os sliders gravam o valor ao serem soltos.
+- Reduzida a carga do mouse: mira limitada a 125 atualizações/s, cursor da janela a 60/s,
+  movimentos enviados fora do lock global, suavização ajustada pelo tempo e coordenadas do
+  toque limitadas à tela.
+- Compactados a navegação, os cartões de jogos, os botões e a página de configurações.
 
 ## Novidades da 0.7.0
 

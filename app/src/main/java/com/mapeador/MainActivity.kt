@@ -276,7 +276,7 @@ private fun MapeadorApp() {
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(horizontal = 18.dp)
+                .padding(horizontal = 12.dp)
         ) {
             when (page) {
                 AppPage.GAMES -> GamesPage(
@@ -467,21 +467,30 @@ private fun MapeadorApp() {
 
 @Composable
 private fun BottomTabs(page: AppPage, onSelect: (AppPage) -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth().height(52.dp).background(PanelDark)) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .height(44.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(PanelDark)
+            .padding(3.dp)
+    ) {
         AppPage.entries.forEach { destination ->
             val selected = destination == page
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxHeight()
-                    .background(if (selected) Color(0xFFD7263D) else Color(0xFF3A0B10))
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(if (selected) Color(0xFFE5484D) else Color.Transparent)
                     .clickable { onSelect(destination) },
                 contentAlignment = Alignment.Center
             ) {
                 Text(
                     destination.label,
                     color = Color.White,
-                    fontSize = 16.sp,
+                    fontSize = 13.sp,
                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
                 )
             }
@@ -495,7 +504,7 @@ private fun StatusPill(label: String, connected: Boolean) {
         modifier = Modifier
             .clip(RoundedCornerShape(50))
             .background(if (connected) Color(0xFF2E9E6B) else Color(0xFF6B1A21))
-            .padding(horizontal = 14.dp, vertical = 7.dp),
+            .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
@@ -537,7 +546,7 @@ private fun GamesPage(
     }
     val selectedGame = games.firstOrNull { it.packageName == selectedPackage }
 
-    Column(modifier = Modifier.fillMaxSize().padding(top = 10.dp, bottom = 10.dp)) {
+    Column(modifier = Modifier.fillMaxSize().padding(top = 8.dp, bottom = 8.dp)) {
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
@@ -546,19 +555,23 @@ private fun GamesPage(
                 painter = painterResource(R.drawable.b13_logo),
                 contentDescription = "Logo B13",
                 tint = Color.Unspecified,
-                modifier = Modifier.size(40.dp)
+                modifier = Modifier.size(32.dp)
             )
             Text(
                 "B13 MAUSE PRO",
                 color = TextPrimary,
-                fontSize = 18.sp,
+                fontSize = 16.sp,
                 fontWeight = FontWeight.Black,
-                modifier = Modifier.padding(start = 8.dp)
+                modifier = Modifier.padding(start = 6.dp)
             )
             Button(
                 onClick = onAddGame,
-                modifier = Modifier.padding(start = 14.dp)
-            ) { Text("＋ Adicionar jogo") }
+                modifier = Modifier.padding(start = 8.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    horizontal = 10.dp,
+                    vertical = 6.dp
+                )
+            ) { Text("＋ Jogo", fontSize = 12.sp) }
             Box(Modifier.weight(1f))
             StatusPill("Mouse", inputDevices.second)
             Box(Modifier.width(8.dp))
@@ -581,24 +594,24 @@ private fun GamesPage(
             } else {
                 Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     games.forEach { game ->
                         val selected = game.packageName == selectedPackage
                         Card(
-                            modifier = Modifier.width(150.dp).clickable { onSelectPackage(game.packageName) },
+                            modifier = Modifier.width(128.dp).clickable { onSelectPackage(game.packageName) },
                             colors = CardDefaults.cardColors(
                                 containerColor = if (selected) Panel else Color(0xFF2B0C10)
                             ),
-                            shape = RoundedCornerShape(20.dp),
+                            shape = RoundedCornerShape(16.dp),
                             border = if (selected) null else androidx.compose.foundation.BorderStroke(
                                 1.dp,
                                 Panel.copy(alpha = 0.6f)
                             )
                         ) {
                             Column(
-                                modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                modifier = Modifier.fillMaxWidth().padding(8.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
                                 GameAppIcon(game, selected)
@@ -607,7 +620,7 @@ private fun GamesPage(
                                     color = if (selected) Color.White else TextPrimary,
                                     fontWeight = FontWeight.SemiBold,
                                     maxLines = 1,
-                                    modifier = Modifier.padding(top = 8.dp)
+                                    modifier = Modifier.padding(top = 6.dp)
                                 )
                                 TextButton(
                                     onClick = { onRemoveGame(game) },
@@ -629,9 +642,13 @@ private fun GamesPage(
         Button(
             onClick = { selectedGame?.let(onStartGame) },
             enabled = selectedGame != null,
-            modifier = Modifier.align(Alignment.CenterHorizontally).width(260.dp)
+            modifier = Modifier.align(Alignment.CenterHorizontally).width(190.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                horizontal = 12.dp,
+                vertical = 8.dp
+            )
         ) {
-            Text(if (selectedGame == null) "Selecione um jogo" else "Iniciar jogo")
+            Text(if (selectedGame == null) "Selecione um jogo" else "Iniciar jogo", fontSize = 14.sp)
         }
     }
 }
@@ -674,18 +691,18 @@ private fun GameAppIcon(game: GameApp, selected: Boolean) {
     }
     if (icon == null) {
         Box(
-            modifier = Modifier.size(58.dp).clip(RoundedCornerShape(16.dp)).background(
+            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(14.dp)).background(
                 if (selected) Color.White.copy(alpha = 0.18f) else Panel.copy(alpha = 0.12f)
             ),
             contentAlignment = Alignment.Center
         ) {
-            Text(game.label.take(1).uppercase(), color = if (selected) Color.White else Panel, fontSize = 24.sp)
+            Text(game.label.take(1).uppercase(), color = if (selected) Color.White else Panel, fontSize = 20.sp)
         }
     } else {
         AndroidView(
             factory = { ImageView(it).apply { scaleType = ImageView.ScaleType.FIT_CENTER } },
             update = { it.setImageDrawable(icon) },
-            modifier = Modifier.size(58.dp).clip(RoundedCornerShape(16.dp))
+            modifier = Modifier.size(48.dp).clip(RoundedCornerShape(14.dp))
         )
     }
 }
@@ -911,7 +928,7 @@ private fun FpsViewDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(460.dp)
+                    .height(340.dp)
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
@@ -997,13 +1014,13 @@ private fun SettingsPage(
     val overlayGranted = Settings.canDrawOverlays(context)
 
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text("Configurações", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+        Text("Configurações", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Card(
             colors = CardDefaults.cardColors(containerColor = Panel),
-            shape = RoundedCornerShape(6.dp)
+            shape = RoundedCornerShape(14.dp)
         ) {
             Column(Modifier.fillMaxWidth()) {
                 SettingsRow("Modo de Ativação", "Shizuku", onConnectShizuku)
@@ -1033,8 +1050,11 @@ private fun SettingsPage(
             checked = indicatorsEnabled,
             onCheckedChange = onIndicatorsChange
         )
-        Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
-            Column(Modifier.padding(16.dp)) {
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Panel),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Column(Modifier.padding(12.dp)) {
                 Text("Aparência dos indicadores", color = Color.White, fontWeight = FontWeight.SemiBold)
                 Text("Cor", color = Muted, modifier = Modifier.padding(top = 12.dp, bottom = 8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -1092,11 +1112,11 @@ private fun SettingsPage(
 @Composable
 private fun SettingsRow(title: String, value: String, onClick: () -> Unit) {
     Row(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 14.dp),
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(title, color = Color.White, fontSize = 16.sp, modifier = Modifier.weight(1f))
-        Text(if (value.isEmpty()) "›" else "$value ›", color = Color.White, fontSize = 14.sp)
+        Text(title, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+        Text(if (value.isEmpty()) "›" else "$value ›", color = Color.White, fontSize = 12.sp)
     }
 }
 
@@ -1112,14 +1132,17 @@ private fun SettingSwitch(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Panel),
+        shape = RoundedCornerShape(14.dp)
+    ) {
         Row(
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(title, color = Color.White, fontWeight = FontWeight.SemiBold)
-                Text(description, color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp))
+                Text(title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(description, color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 3.dp))
             }
             Switch(checked = checked, onCheckedChange = onCheckedChange)
         }
@@ -1134,10 +1157,13 @@ private fun SettingSlider(
     onValueChange: (Float) -> Unit,
     valueRange: ClosedFloatingPointRange<Float> = 0.1f..2f
 ) {
-    Card(colors = CardDefaults.cardColors(containerColor = Panel)) {
-        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Panel),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                Text(title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 Text("${(value * 100).roundToInt()}%", color = Accent)
             }
             Slider(

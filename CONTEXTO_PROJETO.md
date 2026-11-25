@@ -33,7 +33,7 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 5. Motor pausado enquanto o editor está aberto; reinicia ao fechar o editor ou ao mudar o mapeamento.
 6. O serviço devolve uma mensagem de status que o app mostra em Toast.
 
-## Visibilidade e mouse (desde 0.5.0; estado atual 0.7.0)
+## Visibilidade e mouse (desde 0.5.0; estado atual 0.7.1)
 - O serviço observa foco por `ITaskStackListener` refletido e mantém polling de fallback;
   o app consulta o estado a cada 250 ms quando o cursor está visível e 750 ms quando oculto.
   Só o estado confirmado como foreground mantém captura; estados desconhecidos liberam entradas.
@@ -69,6 +69,15 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 (× raio ajustável entre 20% e 150%), `JOYSTICK_MIN_DP = 24`.
 
 ## Histórico
+- 0.7.1 — Corrigido o acúmulo de janelas do cursor: ao abrir o editor, a janela dedicada
+  agora é ocultada e reutilizada, sem perder sua referência nem criar setas extras. Painéis
+  de configuração/importação ficam acima da barra do editor, com dimensões mais compactas;
+  ajustes dos sliders só são salvos ao soltar o controle. O Mouse FPS injeta no máximo a
+  125 Hz, limita as coordenadas do toque aos pixels reais da tela, envia movimentos sem
+  manter o lock global do motor e usa suavização baseada no tempo entre amostras para
+  manter resposta consistente. A navegação e os cartões da
+  biblioteca foram compactados e reorganizados visualmente. Necessário validar em aparelho,
+  sobretudo a mira ao chegar às bordas físicas da tela.
 - 0.7.0 — Captura do mouse condicionada a controles de mouse; identificação/agrupamento de nós
   físicos, captura considerada pelo nó REL_X/REL_Y, `EVIOCGRAB` corrigido e alternância sem
   reabrir streams. Foco por `ITaskStackListener` refletido com fallback e liberação segura ao

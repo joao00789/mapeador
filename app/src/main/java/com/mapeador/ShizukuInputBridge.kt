@@ -616,6 +616,10 @@ class ShizukuInputUserService : Binder() {
     private var cursorFinger = -1
     private var cursorRightFinger = -1
     private val cursorUpdates = java.util.concurrent.LinkedBlockingDeque<CursorUpdate>(1)
+    private val cursorPublishLock = Any()
+    private var pendingCursorPublish: CursorUpdate? = null
+    private var cursorPublishScheduled = false
+    private var lastCursorPublishAt = 0L
     @Volatile private var cursorSocket: android.net.LocalSocket? = null
     private val devices = ConcurrentHashMap<String, FileInputStream>()
     private val swipeExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -1325,6 +1329,8 @@ class ShizukuInputUserService : Binder() {
     }
 
     private fun flushMouseMotion(runGeneration: Int) {
+        val pendingMoves = ArrayList<TouchMove>()
+        var movementInjector: TouchInjector? = null
         synchronized(lock) {
             if (generation != runGeneration || !running) return
             val inputDeltaX = pendingMouseDeltaX.toFloat()
@@ -1339,7 +1345,8 @@ class ShizukuInputUserService : Binder() {
                 .flatten()
                 .any { it.control.type == "MOUSE_DRAG" && it.control.finger >= 0 }
             if (touch != null && draggingControl && (inputDeltaX != 0f || inputDeltaY != 0f)) {
-                moveMouseDragControls(touch, inputDeltaX, inputDeltaY)
+                movementInjector = touch
+                pendingMoves.addAll(moveMouseDragControls(inputDeltaX, inputDeltaY))
             }
 
             if (mouseLookActive) {
@@ -1347,56 +1354,77 @@ class ShizukuInputUserService : Binder() {
                     smoothedLookDeltaX = 0f
                     smoothedLookDeltaY = 0f
                     lastLookMotionAt = 0L
-                    return
-                }
-                if (touch == null) return
-                if (inputDeltaX == 0f && inputDeltaY == 0f) return
-                val now = SystemClock.elapsedRealtime()
-                if (now - lastLookMotionAt > LOOK_SMOOTHING_RESET_MS) {
-                    smoothedLookDeltaX = 0f
-                    smoothedLookDeltaY = 0f
-                }
-                lastLookMotionAt = now
-                val smoothing = (lookControl?.smoothing ?: DEFAULT_LOOK_SMOOTHING)
-                    .coerceIn(0, 100) / 100f * MAX_LOOK_DELTA_SMOOTHING
-                smoothedLookDeltaX = if (inputDeltaX == 0f) 0f else
-                    smoothedLookDeltaX * smoothing + inputDeltaX * (1f - smoothing)
-                smoothedLookDeltaY = if (inputDeltaY == 0f) 0f else
-                    smoothedLookDeltaY * smoothing + inputDeltaY * (1f - smoothing)
-                if (kotlin.math.abs(smoothedLookDeltaX) < LOOK_DELTA_EPSILON) smoothedLookDeltaX = 0f
-                if (kotlin.math.abs(smoothedLookDeltaY) < LOOK_DELTA_EPSILON) smoothedLookDeltaY = 0f
-                if (smoothedLookDeltaX != 0f || smoothedLookDeltaY != 0f) {
-                    lookControl?.let { moveLook(touch, it, smoothedLookDeltaX, smoothedLookDeltaY) }
+                } else if (touch != null && (inputDeltaX != 0f || inputDeltaY != 0f)) {
+                    val now = SystemClock.elapsedRealtime()
+                    val elapsedSinceLastMotion = now - lastLookMotionAt
+                    if (elapsedSinceLastMotion > LOOK_SMOOTHING_RESET_MS) {
+                        smoothedLookDeltaX = 0f
+                        smoothedLookDeltaY = 0f
+                    }
+                    val elapsedMs = elapsedSinceLastMotion
+                        .takeIf { it in 1..LOOK_SMOOTHING_RESET_MS }
+                        ?: MOUSE_MOTION_FRAME_MS
+                    val smoothingPercent = (lookControl?.smoothing ?: DEFAULT_LOOK_SMOOTHING)
+                        .coerceIn(0, 100) / 100f
+                    val smoothingTimeMs = smoothingPercent * MAX_LOOK_SMOOTHING_TAU_MS
+                    val previousWeight = if (smoothingTimeMs == 0f) {
+                        0f
+                    } else {
+                        kotlin.math.exp(-elapsedMs.toDouble() / smoothingTimeMs.toDouble()).toFloat()
+                    }
+                    lastLookMotionAt = now
+                    smoothedLookDeltaX = if (inputDeltaX == 0f) 0f else
+                        smoothedLookDeltaX * previousWeight + inputDeltaX * (1f - previousWeight)
+                    smoothedLookDeltaY = if (inputDeltaY == 0f) 0f else
+                        smoothedLookDeltaY * previousWeight + inputDeltaY * (1f - previousWeight)
+                    if (kotlin.math.abs(smoothedLookDeltaX) < LOOK_DELTA_EPSILON) smoothedLookDeltaX = 0f
+                    if (kotlin.math.abs(smoothedLookDeltaY) < LOOK_DELTA_EPSILON) smoothedLookDeltaY = 0f
+                    if (smoothedLookDeltaX != 0f || smoothedLookDeltaY != 0f) {
+                        movementInjector = touch
+                        lookControl?.let {
+                            moveLook(touch, it, smoothedLookDeltaX, smoothedLookDeltaY)?.let(pendingMoves::add)
+                        }
+                    }
                 }
             } else {
                 smoothedLookDeltaX = 0f
                 smoothedLookDeltaY = 0f
                 lastLookMotionAt = 0L
-                if (inputDeltaX == 0f && inputDeltaY == 0f) return
-                moveCursor(inputDeltaX, inputDeltaY)
-                if (cursorFinger >= 0) injector?.move(cursorFinger, cursorX, cursorY)
-                publishCursorState()
+                if (inputDeltaX != 0f || inputDeltaY != 0f) {
+                    moveCursor(inputDeltaX, inputDeltaY)
+                    if (cursorFinger >= 0) {
+                        injector?.let {
+                            movementInjector = it
+                            pendingMoves.add(TouchMove(cursorFinger, cursorX, cursorY))
+                        }
+                    }
+                    publishCursorState()
+                }
             }
+        }
+        movementInjector?.let { touch ->
+            pendingMoves.forEach { touch.move(it.finger, it.x, it.y) }
         }
     }
 
-    private fun moveMouseDragControls(touch: TouchInjector, deltaX: Float, deltaY: Float) {
+    private fun moveMouseDragControls(deltaX: Float, deltaY: Float): List<TouchMove> =
         bindings.values.asSequence()
             .flatten()
             .map { it.control }
             .distinct()
             .filter { it.type == "MOUSE_DRAG" && it.finger >= 0 }
-            .forEach { control ->
+            .map { control ->
                 control.lookX = (control.lookX + deltaX * control.sensitivityX * MOUSE_DRAG_SCALE)
                     .coerceIn(0f, (width - 1).toFloat())
                 control.lookY = (control.lookY + deltaY * control.sensitivityY * MOUSE_DRAG_SCALE)
                     .coerceIn(0f, (height - 1).toFloat())
-                touch.move(control.finger, control.lookX, control.lookY)
+                TouchMove(control.finger, control.lookX, control.lookY)
             }
+            .toList()
     }
 
-    /** Applies relative mouse movement to one touch; camera deltas remain unbounded at screen edges. */
-    private fun moveLook(touch: TouchInjector, control: Control, deltaX: Float, deltaY: Float) {
+    /** Applies relative mouse movement to one touch, keeping injected coordinates on the display. */
+    private fun moveLook(touch: TouchInjector, control: Control, deltaX: Float, deltaY: Float): TouchMove? {
         val anchorX = pixelX(control)
         val anchorY = pixelY(control)
         if (control.finger < 0) {
@@ -1404,10 +1432,12 @@ class ShizukuInputUserService : Binder() {
             control.lookX = anchorX
             control.lookY = anchorY
         }
-        if (control.finger < 0) return
-        control.lookX += deltaX * control.sensitivityX * MOUSE_LOOK_SCALE
-        control.lookY += deltaY * control.sensitivityY * MOUSE_LOOK_SCALE
-        touch.move(control.finger, control.lookX, control.lookY)
+        if (control.finger < 0) return null
+        control.lookX = (control.lookX + deltaX * control.sensitivityX * MOUSE_LOOK_SCALE)
+            .coerceIn(0f, (width - 1).toFloat())
+        control.lookY = (control.lookY + deltaY * control.sensitivityY * MOUSE_LOOK_SCALE)
+            .coerceIn(0f, (height - 1).toFloat())
+        return TouchMove(control.finger, control.lookX, control.lookY)
     }
 
     private fun moveCursor(deltaX: Float, deltaY: Float) {
@@ -1501,6 +1531,26 @@ class ShizukuInputUserService : Binder() {
             cursorVisible(),
             mouseLookActive
         )
+        val delayMs = synchronized(cursorPublishLock) {
+            pendingCursorPublish = update
+            if (cursorPublishScheduled) return
+            cursorPublishScheduled = true
+            (CURSOR_PUSH_FRAME_MS - (SystemClock.elapsedRealtime() - lastCursorPublishAt))
+                .coerceAtLeast(0L)
+        }
+        responseExecutor.schedule({
+            val latest = synchronized(cursorPublishLock) {
+                val state = pendingCursorPublish
+                pendingCursorPublish = null
+                cursorPublishScheduled = false
+                if (state != null) lastCursorPublishAt = SystemClock.elapsedRealtime()
+                state
+            }
+            if (latest != null) enqueueCursorUpdate(latest)
+        }, delayMs, TimeUnit.MILLISECONDS)
+    }
+
+    private fun enqueueCursorUpdate(update: CursorUpdate) {
         if (!cursorUpdates.offer(update)) {
             cursorUpdates.poll()
             cursorUpdates.offer(update)
@@ -1513,6 +1563,8 @@ class ShizukuInputUserService : Binder() {
         val visible: Boolean,
         val mouseLookActive: Boolean
     )
+
+    private data class TouchMove(val finger: Int, val x: Float, val y: Float)
 
     private fun noteMouseMotionPath(path: String) {
         if (!mouseManaged) return
@@ -1936,11 +1988,12 @@ class ShizukuInputUserService : Binder() {
         const val REL_WHEEL_HI_RES = 12
         const val MOUSE_LOOK_SCALE = 1.0f
         const val DEFAULT_LOOK_SMOOTHING = 35
-        const val MAX_LOOK_DELTA_SMOOTHING = 0.35f
+        const val MAX_LOOK_SMOOTHING_TAU_MS = 8f
         const val LOOK_SMOOTHING_RESET_MS = 80L
         const val MAX_MOUSE_SENSITIVITY = 3f
         const val LOOK_DELTA_EPSILON = 0.001f
-        const val MOUSE_MOTION_FRAME_MS = 4L
+        const val MOUSE_MOTION_FRAME_MS = 8L
+        const val CURSOR_PUSH_FRAME_MS = 16L
         const val MOUSE_DRAG_SCALE = 1.0f
         const val CURSOR_SPEED = 1.6f
         const val UP = 0
