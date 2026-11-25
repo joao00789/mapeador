@@ -73,7 +73,7 @@ object ShizukuInputBridge {
         ).daemon(false)
             .processNameSuffix("input")
             .tag("nexoplay-input")
-            .version(12)
+            .version(13)
         val serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 remote = binder
@@ -457,6 +457,7 @@ class ShizukuInputUserService : Binder() {
     private val knownMousePaths = ConcurrentHashMap.newKeySet<String>()
     private val mouseMotionPaths = ConcurrentHashMap.newKeySet<String>()
     private val mouseGrabFailures = ConcurrentHashMap<String, String>()
+    private val pressedKeySources = HashMap<String, MutableSet<String>>()
     @Volatile private var grabNote = ""
     @Volatile private var mouseCandidateSummary = "não identificado"
     private var lookControl: Control? = null
@@ -487,6 +488,7 @@ class ShizukuInputUserService : Binder() {
     private var mouseMotionFlushScheduled = false
     private var smoothedLookDeltaX = 0f
     private var smoothedLookDeltaY = 0f
+    private var lastLookMotionAt = 0L
 
     override fun onTransact(code: Int, data: Parcel, reply: Parcel?, flags: Int): Boolean {
         if (code == IBinder.INTERFACE_TRANSACTION) {
@@ -599,6 +601,7 @@ class ShizukuInputUserService : Binder() {
         devices.clear()
         synchronized(lock) {
             bindings.values.flatten().forEach { it.control.reset() }
+            pressedKeySources.clear()
             injector?.releaseAll()
             cursorFinger = -1
             pendingMouseDeltaX = 0.0
@@ -606,6 +609,7 @@ class ShizukuInputUserService : Binder() {
             mouseMotionFlushScheduled = false
             smoothedLookDeltaX = 0f
             smoothedLookDeltaY = 0f
+            lastLookMotionAt = 0L
         }
         injector = null
         lookControl = null
@@ -687,7 +691,32 @@ class ShizukuInputUserService : Binder() {
         val ignored = intArrayOf(0)
         while (isRunning(runGeneration)) {
             try { Thread.sleep(2000) } catch (_: InterruptedException) { return }
-            if (isRunning(runGeneration)) scanDevices(runGeneration, ignored)
+            if (isRunning(runGeneration)) {
+                scanDevices(runGeneration, ignored)
+                retryMouseCapture()
+            }
+        }
+    }
+
+    private fun retryMouseCapture() {
+        if (!running || !grabMice) return
+        knownMousePaths.toList().forEach { path ->
+            if (path in grabbedPaths) return@forEach
+            val stream = devices[path] ?: return@forEach
+            val errno = try {
+                NativeMouseGrab.grab(stream.fd, true)
+            } catch (error: Throwable) {
+                grabNote = (error.cause ?: error).message ?: error.javaClass.simpleName
+                -1
+            }
+            if (errno == 0) {
+                grabbedPaths.add(path)
+                mouseGrabFailures.remove(path)
+                Log.i(tag, "Captura do mouse recuperada para ${File(path).name}")
+            } else {
+                mouseGrabFailures[path] = if (errno < 0) grabNote.ifEmpty { "erro ioctl $errno" }
+                    else "ioctl EVIOCGRAB falhou (errno=$errno)"
+            }
         }
     }
 
@@ -740,7 +769,7 @@ class ShizukuInputUserService : Binder() {
                     EV_KEY -> if (value == 0 || value == 1) {
                         val name = LINUX_KEYS[code]
                         val mouseInput = path in knownMousePaths || code in BTN_LEFT..BTN_TASK
-                        if (name != null) onKey(name, value == 1, mouseInput && path in grabbedPaths)
+                        if (name != null) onKey(name, value == 1, mouseInput && path in grabbedPaths, path)
                     }
                     EV_REL -> when (code) {
                         REL_X -> {
@@ -762,6 +791,12 @@ class ShizukuInputUserService : Binder() {
         } catch (error: Exception) {
             if (isRunning(runGeneration)) Log.i(tag, "Leitura de $path encerrada: ${error.message}")
         } finally {
+            if (isRunning(runGeneration)) {
+                val releasedKeys = synchronized(lock) {
+                    pressedKeySources.filterValues { path in it }.keys.toList()
+                }
+                releasedKeys.forEach { onKey(it, false, true, path) }
+            }
             if (devices[path] === stream) {
                 devices.remove(path)
             }
@@ -818,6 +853,7 @@ class ShizukuInputUserService : Binder() {
             // Left the game: drop every virtual finger so nothing stays pressed.
             synchronized(lock) {
                 bindings.values.flatten().forEach { it.control.reset() }
+                pressedKeySources.clear()
                 injector?.releaseAll()
                 cursorFinger = -1
             }
@@ -875,25 +911,32 @@ class ShizukuInputUserService : Binder() {
                 if (draggingControl) {
                     smoothedLookDeltaX = 0f
                     smoothedLookDeltaY = 0f
+                    lastLookMotionAt = 0L
                     return
                 }
                 if (touch == null) return
+                if (inputDeltaX == 0f && inputDeltaY == 0f) return
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastLookMotionAt > LOOK_SMOOTHING_RESET_MS) {
+                    smoothedLookDeltaX = 0f
+                    smoothedLookDeltaY = 0f
+                }
+                lastLookMotionAt = now
                 val smoothing = (lookControl?.smoothing ?: DEFAULT_LOOK_SMOOTHING)
                     .coerceIn(0, 100) / 100f * MAX_LOOK_DELTA_SMOOTHING
-                smoothedLookDeltaX =
+                smoothedLookDeltaX = if (inputDeltaX == 0f) 0f else
                     smoothedLookDeltaX * smoothing + inputDeltaX * (1f - smoothing)
-                smoothedLookDeltaY =
+                smoothedLookDeltaY = if (inputDeltaY == 0f) 0f else
                     smoothedLookDeltaY * smoothing + inputDeltaY * (1f - smoothing)
                 if (kotlin.math.abs(smoothedLookDeltaX) < LOOK_DELTA_EPSILON) smoothedLookDeltaX = 0f
                 if (kotlin.math.abs(smoothedLookDeltaY) < LOOK_DELTA_EPSILON) smoothedLookDeltaY = 0f
-                if (smoothedLookDeltaX == 0f && smoothedLookDeltaY == 0f) return
-                lookControl?.let { moveLook(touch, it, smoothedLookDeltaX, smoothedLookDeltaY) }
-                if (smoothing > 0f && (smoothedLookDeltaX != 0f || smoothedLookDeltaY != 0f)) {
-                    scheduleMouseMotionFlush(runGeneration)
+                if (smoothedLookDeltaX != 0f || smoothedLookDeltaY != 0f) {
+                    lookControl?.let { moveLook(touch, it, smoothedLookDeltaX, smoothedLookDeltaY) }
                 }
             } else {
                 smoothedLookDeltaX = 0f
                 smoothedLookDeltaY = 0f
+                lastLookMotionAt = 0L
                 if (inputDeltaX == 0f && inputDeltaY == 0f) return
                 moveCursor(inputDeltaX, inputDeltaY)
                 if (cursorFinger >= 0) injector?.move(cursorFinger, cursorX, cursorY)
@@ -957,6 +1000,7 @@ class ShizukuInputUserService : Binder() {
             mouseLookActive = active
             Log.i(tag, if (active) "Mouse FPS: mira ativa" else "Mouse FPS: cursor próprio")
         }
+        if (!active) retryMouseCapture()
     }
 
     private fun toggleMouseMode() {
@@ -1012,10 +1056,27 @@ class ShizukuInputUserService : Binder() {
 
     // ---------------------------------------------------------------- key handling
 
-    private fun onKey(key: String, down: Boolean, capturedMouseInput: Boolean) {
+    private fun onKey(key: String, down: Boolean, capturedMouseInput: Boolean, sourcePath: String) {
         lastKeyText = "$key ${if (down) "↓" else "↑"}"
         lastKeyAt = SystemClock.elapsedRealtime()
-        if (key.startsWith("MOUSE_") && !capturedMouseInput) return
+        if (key.startsWith("MOUSE_") && !capturedMouseInput && down) return
+        val isTransition = synchronized(lock) {
+            if (down) {
+                val sources = pressedKeySources.getOrPut(key) { HashSet() }
+                sources.add(sourcePath) && sources.size == 1
+            } else {
+                val sources = pressedKeySources[key] ?: return@synchronized false
+                if (!sources.remove(sourcePath)) {
+                    false
+                } else if (sources.isEmpty()) {
+                    pressedKeySources.remove(key)
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        if (!isTransition) return
         val mouseLookShortcut = bindings[key].orEmpty().any { it.control.type == "MOUSE_LOOK" }
         val mouseDragShortcut = bindings[key].orEmpty().any { it.control.type == "MOUSE_DRAG" }
         if (key == "MOUSE_LEFT" && !mouseLookActive && !mouseLookShortcut && !mouseDragShortcut) {
@@ -1198,13 +1259,13 @@ class ShizukuInputUserService : Binder() {
                 item.optDouble("y", 0.5).toFloat().coerceIn(0f, 1f),
                 item.optDouble("rangePx", 0.0).toFloat().takeIf { it > 1f } ?: DEFAULT_JOYSTICK_RANGE,
                 item.optBoolean("stopOnOpposite", true),
-                item.optDouble("sensitivityX", 1000.0).toFloat().coerceIn(0f, 3000f) / 1000f,
-                item.optDouble("sensitivityY", 1000.0).toFloat().coerceIn(0f, 3000f) / 1000f,
+                parseMouseSensitivity(item, "sensitivityX"),
+                parseMouseSensitivity(item, "sensitivityY"),
                 item.optInt("smoothing", DEFAULT_LOOK_SMOOTHING).coerceIn(0, 100)
             )
             control.pressMode = item.optString("pressMode", "HOLD")
             control.responseMs = item.optInt("responseMs", 0).coerceIn(0, 300)
-            if (type == "MOUSE_LOOK") cursorSpeed = item.optDouble("cursorSpeed", 1.6).toFloat().coerceIn(0.4f, 5f)
+            if (type == "MOUSE_LOOK") cursorSpeed = item.optDouble("cursorSpeed", 1.6).toFloat().coerceIn(0f, 4f)
             val rawKey = item.optString("key")
             if (type == "JOYSTICK") {
                 val keys = if (rawKey.equals("SETAS", ignoreCase = true)) {
@@ -1226,6 +1287,15 @@ class ShizukuInputUserService : Binder() {
     } catch (error: Exception) {
         Log.e(tag, "Mapeamento inválido recebido pelo serviço Shizuku", error)
         emptyMap()
+    }
+
+    private fun parseMouseSensitivity(item: org.json.JSONObject, key: String): Float {
+        val value = item.optDouble(key, 1.0).toFloat()
+        return when (item.optInt("sensitivityScale", 0)) {
+            100 -> (value.coerceIn(0f, 100f) / 100f) * MAX_MOUSE_SENSITIVITY
+            1000 -> (value.coerceIn(0f, 3000f) / 1000f).coerceAtMost(MAX_MOUSE_SENSITIVITY)
+            else -> value.coerceIn(0.1f, 4f).coerceAtMost(MAX_MOUSE_SENSITIVITY)
+        }
     }
 
     private fun normalizeSavedKey(value: String): String =
@@ -1286,7 +1356,9 @@ class ShizukuInputUserService : Binder() {
         const val REL_Y = 1
         const val MOUSE_LOOK_SCALE = 1.0f
         const val DEFAULT_LOOK_SMOOTHING = 35
-        const val MAX_LOOK_DELTA_SMOOTHING = 0.8f
+        const val MAX_LOOK_DELTA_SMOOTHING = 0.35f
+        const val LOOK_SMOOTHING_RESET_MS = 80L
+        const val MAX_MOUSE_SENSITIVITY = 3f
         const val LOOK_DELTA_EPSILON = 0.001f
         const val MOUSE_MOTION_FRAME_MS = 4L
         const val MOUSE_DRAG_SCALE = 1.0f

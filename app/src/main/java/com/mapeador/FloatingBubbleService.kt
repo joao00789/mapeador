@@ -63,8 +63,8 @@ private data class OverlayControl(
     val cursorY: Float = 0.5f,
     val preventViewFreeze: Boolean = true,
     val controllerAcceleration: Float = 0.5f,
-    val sensitivityX: Float = 1000f,
-    val sensitivityY: Float = 1000f,
+    val sensitivityX: Float = 100f / 3f,
+    val sensitivityY: Float = 100f / 3f,
     val smoothing: Int = 35,
     val sizeScale: Float = 1f,
     val cursorSpeed: Float = 1.6f,
@@ -74,12 +74,12 @@ private data class OverlayControl(
 )
 
 private fun JSONObject.sensitivityValue(name: String): Float {
-    if (!has(name)) return 1000f
-    val value = optDouble(name, 1000.0).toFloat()
-    return if (optInt("sensitivityScale", 0) == 1000) {
-        value.coerceIn(0f, 3000f)
-    } else {
-        (value * 1000f).coerceIn(0f, 3000f)
+    if (!has(name)) return 100f / 3f
+    val value = optDouble(name, 100.0).toFloat()
+    return when (optInt("sensitivityScale", 0)) {
+        100 -> value.coerceIn(0f, 100f)
+        1000 -> (value / 30f).coerceIn(0f, 100f)
+        else -> (value * (100f / 3f)).coerceIn(0f, 100f)
     }
 }
 
@@ -315,7 +315,7 @@ class FloatingBubbleService : Service() {
     private val statePoller = object : Runnable {
         override fun run() {
             pollEngineState()
-            handler.postDelayed(this, if (cursorShown) 16L else 700L)
+            handler.postDelayed(this, if (cursorShown) 16L else 100L)
         }
     }
     private val diagnosticsTicker = object : Runnable {
@@ -575,6 +575,7 @@ class FloatingBubbleService : Service() {
             if (control.type == "MOUSE_LOOK") {
                 item.put("sensitivityX", control.sensitivityX.toDouble())
                 item.put("sensitivityY", control.sensitivityY.toDouble())
+                item.put("sensitivityScale", 100)
                 item.put("smoothing", control.smoothing)
                 item.put("cursorSpeed", control.cursorSpeed.toDouble())
             }
@@ -1604,19 +1605,19 @@ class FloatingBubbleService : Service() {
                 })
             })
         }
-        fun mouseSensitivitySlider(axis: String, value: Float, update: (Float) -> Unit) {
+        fun sensitivityPercentSlider(axis: String, value: Float, update: (Float) -> Unit) {
             val label = TextView(this).apply {
-                text = "Sensibilidade $axis: ${value.toInt()} (${String.format(java.util.Locale.US, "%.1f", value / 1000f)}x)"
+                text = "Sensibilidade $axis: ${value.toInt()}%"
                 textSize = 13f
                 setTextColor(Color.WHITE)
             }
             card.addView(label)
             card.addView(styledSeekBar().apply {
-                max = 3000
+                max = 100
                 progress = value.toInt().coerceIn(0, max)
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                        label.text = "Sensibilidade $axis: $progress (${String.format(java.util.Locale.US, "%.1f", progress / 1000f)}x)"
+                        label.text = "Sensibilidade $axis: $progress%"
                         update(progress.toFloat())
                     }
                     override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
@@ -1624,12 +1625,18 @@ class FloatingBubbleService : Service() {
                 })
             })
         }
-        mouseSensitivitySlider("X", control.sensitivityX) { next ->
+        sensitivityPercentSlider("X", control.sensitivityX) { next ->
             writeControls(readControls().map { if (it.id == id) it.copy(sensitivityX = next) else it })
         }
-        mouseSensitivitySlider("Y", control.sensitivityY) { next ->
+        sensitivityPercentSlider("Y", control.sensitivityY) { next ->
             writeControls(readControls().map { if (it.id == id) it.copy(sensitivityY = next) else it })
         }
+        card.addView(TextView(this).apply {
+            text = "Referência: 33 = padrão (1x) • 100 = máximo (3x)"
+            textSize = 11f
+            setTextColor(0xFFFFE3E4.toInt())
+            setPadding(0, dp(2), 0, dp(6))
+        })
         val smoothingLabel = TextView(this).apply {
             text = "Suavização da mira: ${control.smoothing}%"
             textSize = 13f
@@ -1668,9 +1675,26 @@ class FloatingBubbleService : Service() {
                 override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
             })
         })
-        sensitivitySlider("do cursor", control.cursorSpeed, 0.4f, 4.0f) { next ->
-            writeControls(readControls().map { if (it.id == id) it.copy(cursorSpeed = next) else it })
+        val cursorSpeedLabel = TextView(this).apply {
+            text = "Velocidade do cursor: ${(control.cursorSpeed * 25f).toInt().coerceIn(0, 100)}%"
+            textSize = 13f
+            setTextColor(Color.WHITE)
         }
+        card.addView(cursorSpeedLabel)
+        card.addView(styledSeekBar().apply {
+            max = 100
+            progress = (control.cursorSpeed * 25f).toInt().coerceIn(0, 100)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    cursorSpeedLabel.text = "Velocidade do cursor: $progress%"
+                    writeControls(readControls().map {
+                        if (it.id == id) it.copy(cursorSpeed = progress / 25f) else it
+                    })
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
+        })
         sensitivitySlider("tamanho da seta", control.cursorSize, 0.6f, 1.8f) { size ->
             writeControls(readControls().map { if (it.id == id) it.copy(cursorSize = size) else it })
             cursorView?.let { old ->
@@ -1862,7 +1886,11 @@ class FloatingBubbleService : Service() {
                 controllerAcceleration = item.optDouble("controllerAcceleration", 0.5).toFloat().coerceIn(0f, 1f),
                 sensitivityX = item.sensitivityValue("sensitivityX"),
                 sensitivityY = item.sensitivityValue("sensitivityY"),
-                smoothing = item.optInt("smoothing", 35).coerceIn(0, 100)
+                smoothing = item.optInt("smoothing", 35).coerceIn(0, 100),
+                cursorSpeed = item.optDouble("cursorSpeed", 1.6).toFloat().coerceIn(0f, 4f),
+                cursorSize = item.optDouble("cursorSize", 1.0).toFloat().coerceIn(0.6f, 1.8f),
+                pressMode = item.optString("pressMode", "HOLD"),
+                responseMs = item.optInt("responseMs", 0).coerceIn(0, 300)
             )
         }
     }
@@ -2080,7 +2108,7 @@ class FloatingBubbleService : Service() {
                     sensitivityY = item.sensitivityValue("sensitivityY"),
                     smoothing = item.optInt("smoothing", 35).coerceIn(0, 100),
                     sizeScale = item.optDouble("sizeScale", 1.0).toFloat().coerceIn(0.5f, 2f),
-                    cursorSpeed = item.optDouble("cursorSpeed", 1.6).toFloat().coerceIn(0.4f, 5f),
+                    cursorSpeed = item.optDouble("cursorSpeed", 1.6).toFloat().coerceIn(0f, 4f),
                     cursorSize = item.optDouble("cursorSize", 1.0).toFloat().coerceIn(0.6f, 1.8f),
                     pressMode = item.optString("pressMode", "HOLD"),
                     responseMs = item.optInt("responseMs", 0).coerceIn(0, 300)
@@ -2130,7 +2158,7 @@ class FloatingBubbleService : Service() {
                     .put("controllerAcceleration", control.controllerAcceleration.toDouble())
                     .put("sensitivityX", control.sensitivityX.toDouble())
                     .put("sensitivityY", control.sensitivityY.toDouble())
-                    .put("sensitivityScale", 1000)
+                    .put("sensitivityScale", 100)
                     .put("smoothing", control.smoothing)
                     .put("cursorSpeed", control.cursorSpeed.toDouble())
                     .put("cursorSize", control.cursorSize.toDouble())

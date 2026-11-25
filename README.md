@@ -28,7 +28,7 @@ adicionar um controle Toque; o tamanho dos indicadores e o raio do joystick pode
 ajustados individualmente.
 A seta própria aparece ao iniciar o jogo, mesmo sem um componente Mouse FPS no keymap.
 Com Mouse FPS, a mira começa ativa e a tecla configurada (Alt esquerdo por padrão)
-alterna entre mira e cursor suspenso. Ajuste sensibilidades X/Y (0–3000) e suavização
+alterna entre mira e cursor suspenso. Ajuste sensibilidades X/Y (0–100) e suavização
 (0–100) no marcador Mouse FPS.
 
 Mouse próprio: o app tenta capturar os nós USB do mouse enquanto o jogo está na frente,
@@ -47,6 +47,17 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 `nexoplay-debug-apk` na seção **Artifacts** da execução.
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
+
+## Novidades da 0.6.6
+
+- Sensibilidades X/Y e velocidade do cursor unificadas em controles de 0 a 100;
+  os valores de perfis antigos são convertidos sem alterar a escala efetiva.
+- A mira não continua soltando eventos de suavização depois que o mouse para, reduzindo
+  o atraso ao puxar a câmera enquanto mantém o botão de tiro pressionado.
+- Teclas agora alternam apenas na transição real de soltar para pressionar, com eventos
+  agregados por dispositivo para evitar alternâncias duplicadas. Teclas presas são
+  liberadas quando um dispositivo desconecta ou o jogo perde o foco. A seta é atualizada
+  mais rapidamente e a captura do mouse tenta se recuperar quando uma tentativa falha.
 
 ## Novidades da 0.6.5
 

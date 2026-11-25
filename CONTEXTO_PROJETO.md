@@ -50,6 +50,13 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 (× raio ajustável entre 20% e 150%), `JOYSTICK_MIN_DP = 24`.
 
 ## Histórico
+- 0.6.6 — Sensibilidades X/Y e velocidade do cursor passam a usar escala 0–100;
+  mapeamentos em formatos anteriores são convertidos para manter a resposta equivalente.
+  Suavização da mira é limitada sem drenar deltas em quadros posteriores, reduzindo a
+  latência ao mover a câmera enquanto segura o tiro. Alternância do Mouse FPS só ocorre
+  uma vez por pressão física da tecla, agregando eventos de todos os dispositivos e
+  liberando teclas ativas quando uma entrada desconecta ou o jogo perde foco. A seta
+  responde mais rápido e tentativas de captura do mouse são refeitas quando falham.
 - 0.6.5 — Sensibilidade X/Y do Mouse FPS passa a 0–3000 (1000 = escala anterior) e inclui
   suavização ajustável 0–100; os mapeamentos antigos são migrados ao serem lidos/salvos.
   Cursor próprio centralizado ao suspender a mira; movimento processado em quadros de 4 ms.
