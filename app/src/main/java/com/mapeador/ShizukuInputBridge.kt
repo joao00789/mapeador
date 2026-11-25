@@ -1510,7 +1510,6 @@ class ShizukuInputUserService : Binder() {
                 TouchMove(control.finger, control.lookX, control.lookY)
             }
             .toList()
-    }
 
     /** Applies relative mouse movement to one touch, keeping injected coordinates on the display. */
     private fun moveLook(touch: TouchInjector, control: Control, deltaX: Float, deltaY: Float): TouchMove? {

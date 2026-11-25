@@ -775,33 +775,34 @@ class FloatingBubbleService : Service() {
             Log.w(TAG, "Não foi possível fechar o canal local do cursor", error)
         }
 
-        private fun dispatchEditorPointerEvent(action: Int, x: Int, y: Int) {
-            handler.post {
-                val target = editor ?: return@post
-                val now = SystemClock.uptimeMillis()
-                if (action == MotionEvent.ACTION_DOWN) editorMouseDownTime = now
-                val downTime = editorMouseDownTime.takeIf { it > 0L } ?: now
-                val event = MotionEvent.obtain(
-                    downTime,
-                    now,
-                    action,
-                    x.toFloat(),
-                    y.toFloat(),
-                    0
-                )
-                event.setSource(InputDevice.SOURCE_MOUSE)
-                try {
-                    target.dispatchTouchEvent(event)
-                } finally {
-                    event.recycle()
-                    if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-                        editorMouseDownTime = 0L
-                    }
+        cursorServerSocket = null
+        cursorSocketThread = null
+    }
+
+    private fun dispatchEditorPointerEvent(action: Int, x: Int, y: Int) {
+        handler.post {
+            val target = editor ?: return@post
+            val now = SystemClock.uptimeMillis()
+            if (action == MotionEvent.ACTION_DOWN) editorMouseDownTime = now
+            val downTime = editorMouseDownTime.takeIf { it > 0L } ?: now
+            val event = MotionEvent.obtain(
+                downTime,
+                now,
+                action,
+                x.toFloat(),
+                y.toFloat(),
+                0
+            )
+            event.setSource(InputDevice.SOURCE_MOUSE)
+            try {
+                target.dispatchTouchEvent(event)
+            } finally {
+                event.recycle()
+                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                    editorMouseDownTime = 0L
                 }
             }
         }
-        cursorServerSocket = null
-        cursorSocketThread = null
     }
 
     private fun showDiagnostics() {
