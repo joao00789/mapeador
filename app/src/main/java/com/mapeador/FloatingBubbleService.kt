@@ -1694,9 +1694,9 @@ class FloatingBubbleService : Service() {
         ).apply { topMargin = dp(12) })
         val scroll = ScrollView(this).apply {
             isFillViewport = true
-            addView(card, ScrollView.LayoutParams(
-                ScrollView.LayoutParams.MATCH_PARENT,
-                ScrollView.LayoutParams.WRAP_CONTENT
+            addView(card, FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT
             ))
         }
         scrim.addView(scroll, FrameLayout.LayoutParams(
