@@ -1340,6 +1340,56 @@ class ShizukuInputUserService : Binder() {
         lastMouseDeltaX = deltaX
         lastMouseDeltaY = deltaY
         lastMouseMoveAt = SystemClock.elapsedRealtime()
+
+        if (!mouseLookActive || editorMode) {
+            var pendingMoves: ArrayList<TouchMove>? = null
+            var movementInjector: TouchInjector? = null
+            synchronized(lock) {
+                if (!running || !foreground) return
+                moveCursor(deltaX.toFloat(), deltaY.toFloat())
+                val touch = injector
+                if (touch != null) {
+                    if (cursorFinger >= 0) {
+                        movementInjector = touch
+                        pendingMoves = arrayListOf(TouchMove(cursorFinger, cursorX, cursorY))
+                    }
+                    if (editorMouseButtonDown) {
+                        publishEditorPointerEvent(
+                            MotionEvent.ACTION_MOVE,
+                            cursorX.toInt(),
+                            cursorY.toInt(),
+                            publishState = false
+                        )
+                    }
+                    var hasActiveDrag = false
+                    for (keyBindings in bindings.values) {
+                        if (keyBindings.any {
+                                it.control.type == "MOUSE_DRAG" && it.control.finger >= 0
+                            }
+                        ) {
+                            hasActiveDrag = true
+                            break
+                        }
+                    }
+                    if (hasActiveDrag) {
+                        movementInjector = touch
+                        val dragMoves = moveMouseDragControls(deltaX.toFloat(), deltaY.toFloat())
+                        if (dragMoves.isNotEmpty()) {
+                            val moves = pendingMoves ?: ArrayList<TouchMove>(dragMoves.size).also {
+                                pendingMoves = it
+                            }
+                            moves.addAll(dragMoves)
+                        }
+                    }
+                }
+                publishCursorState()
+            }
+            movementInjector?.let { touch ->
+                pendingMoves?.forEach { touch.move(it.finger, it.x, it.y) }
+            }
+            return
+        }
+
         synchronized(lock) {
             if (!running) return
             pendingMouseDeltaX += deltaX.toDouble()
@@ -1658,7 +1708,12 @@ class ShizukuInputUserService : Binder() {
                 }
             }
 
-    private fun publishEditorPointerEvent(action: Int, x: Int, y: Int) {
+    private fun publishEditorPointerEvent(
+        action: Int,
+        x: Int,
+        y: Int,
+        publishState: Boolean = true
+    ) {
         if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
             pendingEditorMove.getAndSet(null)?.let { move ->
                 if (!editorPointerEvents.offer(move)) {
@@ -1672,16 +1727,17 @@ class ShizukuInputUserService : Binder() {
         } else if (!editorPointerEvents.offer(event)) {
             Log.e(tag, "Fila de eventos do editor cheia; evento do mouse não foi encaminhado")
         }
-        publishCursorState()
+        if (publishState) publishCursorState()
     }
 
-    private fun capturedMouseGroups(): Set<String> =
-        mouseNodeGroups.entries
-            .groupBy({ it.value }, { it.key })
-            .filterValues { paths -> paths.any { it in mouseMotionPaths && it in grabbedPaths } }
-            .keys
+    private fun capturedMouseGroups(): Set<String> = mouseMotionPaths
+        .asSequence()
+        .filter { it in grabbedPaths }
+        .mapNotNull { mouseNodeGroups[it] }
+        .toSet()
 
-    private fun mouseCaptureComplete(): Boolean = capturedMouseGroups().isNotEmpty()
+    private fun mouseCaptureComplete(): Boolean =
+        mouseMotionPaths.any { it in grabbedPaths && mouseNodeGroups.containsKey(it) }
 
     private fun startCursorUpdates(socketName: String, runGeneration: Int) {
         if (socketName.isBlank()) return

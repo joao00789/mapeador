@@ -35,7 +35,7 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
    atualizado no Binder sem reiniciar o motor, preservando a posição do cursor.
 6. O serviço devolve uma mensagem de status que o app mostra em Toast.
 
-## Visibilidade e mouse (desde 0.5.0; estado atual 0.7.2)
+## Visibilidade e mouse (desde 0.5.0; estado atual 0.7.3)
 - O serviço observa foco por `ITaskStackListener` refletido e mantém polling de fallback;
   o app consulta o estado a cada 250 ms quando o cursor está visível e 750 ms quando oculto.
   Só o estado confirmado como foreground mantém captura; estados desconhecidos liberam entradas.
@@ -72,6 +72,9 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 (× raio ajustável entre 20% e 150%), `JOYSTICK_MIN_DP = 24`.
 
 ## Histórico
+- 0.7.3 — O cursor próprio aplica movimento ao receber cada `SYN_REPORT` em vez de aguardar
+  o agendador de 4 ms da mira. A posição segue coalescida na fila e desenhada no máximo uma vez
+  por frame; a verificação de captura evita reconstruir grupos de dispositivos por movimento.
 - 0.7.2 — O editor deixa de parar o motor: modo editor mantém a captura e envia eventos de botão
   pelo socket para interação com marcadores; ao sair, atualiza o mapeamento sem reinício. O
   mouse passa por curva progressiva de sensibilidade 0–100, filtro temporal com decaimento e

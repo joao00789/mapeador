@@ -1,6 +1,6 @@
 # B13 MAUSE PRO
 
-Versão de desenvolvimento: **0.7.2** (`versionCode 22`).
+Versão de desenvolvimento: **0.7.3** (`versionCode 23`).
 
 Primeira versão em desenvolvimento do B13 MAUSE PRO, um mapeador Android com launcher
 de jogos, editor de controles sobreposto e botão flutuante. A tela Iniciar jogo abre por
@@ -61,6 +61,13 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 `nexoplay-debug-apk` na seção **Artifacts** da execução.
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
+
+## Novidades da 0.7.3
+
+- O cursor próprio agora processa o delta diretamente em cada `SYN_REPORT`, sem aguardar o
+  timer de 4 ms usado pela mira. A posição é publicada imediatamente e continua sendo coalescida
+  para no máximo um desenho por frame; também foi removido o agrupamento de dispositivos da
+  verificação executada a cada movimento.
 
 ## Novidades da 0.7.2
 
