@@ -19,8 +19,8 @@ android {
         applicationId = "com.mapeador"
         minSdk = 24
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.7.1"
+        versionCode = 22
+        versionName = "0.7.2"
 
     }
 

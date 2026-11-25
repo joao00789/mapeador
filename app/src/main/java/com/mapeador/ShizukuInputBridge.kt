@@ -27,6 +27,8 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.pow
 
 /** Small Binder bridge: the user service runs as Shizuku's shell/root identity. */
 object ShizukuInputBridge {
@@ -37,6 +39,8 @@ object ShizukuInputBridge {
     private const val TRANSACTION_STATE = IBinder.FIRST_CALL_TRANSACTION + 2
     private const val TRANSACTION_STATUS = IBinder.FIRST_CALL_TRANSACTION + 3
     private const val TRANSACTION_MOUSE_MODE = IBinder.FIRST_CALL_TRANSACTION + 4
+    private const val TRANSACTION_EDITOR_MODE = IBinder.FIRST_CALL_TRANSACTION + 5
+    private const val TRANSACTION_UPDATE_MAPPING = IBinder.FIRST_CALL_TRANSACTION + 6
     private val BIND_TIMEOUT_TOKEN = Any()
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var remote: IBinder? = null
@@ -76,7 +80,7 @@ object ShizukuInputBridge {
         ).daemon(false)
             .processNameSuffix("input")
             .tag("nexoplay-input")
-            .version(14)
+            .version(15)
         val serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 remote = binder
@@ -94,6 +98,7 @@ object ShizukuInputBridge {
                             it(true, serverIdentity())
                         }
                     }
+
                 }
             }
 
@@ -159,7 +164,8 @@ object ShizukuInputBridge {
         cursorSocketName: String,
         emergencyKey: String,
         captureKeyboard: Boolean,
-        rightClickMode: String
+        rightClickMode: String,
+        initialMouseMode: String
     ) {
         val appContext = context.applicationContext
         bind(appContext) { ready, message ->
@@ -179,6 +185,7 @@ object ShizukuInputBridge {
                     parcel.writeString(emergencyKey)
                     parcel.writeInt(if (captureKeyboard) 1 else 0)
                     parcel.writeString(rightClickMode)
+                    parcel.writeString(initialMouseMode)
                 },
                 { reply -> reply.readString().orEmpty() }
             )
@@ -194,6 +201,29 @@ object ShizukuInputBridge {
 
     fun setMouseLookActive(active: Boolean) {
         transact(TRANSACTION_MOUSE_MODE, { parcel -> parcel.writeInt(if (active) 1 else 0) }, { })
+    }
+
+    fun setEditorMode(active: Boolean) {
+        transact(TRANSACTION_EDITOR_MODE, { parcel -> parcel.writeInt(if (active) 1 else 0) }, { })
+    }
+
+    fun updateMapping(
+        mappingJson: String,
+        captureKeyboard: Boolean,
+        emergencyKey: String,
+        rightClickMode: String
+    ) {
+        val result = transact(
+            TRANSACTION_UPDATE_MAPPING,
+            { parcel ->
+                parcel.writeString(mappingJson)
+                parcel.writeInt(if (captureKeyboard) 1 else 0)
+                parcel.writeString(emergencyKey)
+                parcel.writeString(rightClickMode)
+            },
+            { reply -> reply.readString().orEmpty() }
+        )
+        if (result == null) Log.e(TAG, "O serviço Shizuku não aceitou a atualização do mapeamento")
     }
 
     /** Live state of the engine: is the game in front, and where is the app's own mouse cursor. */
@@ -580,12 +610,16 @@ class ShizukuInputUserService : Binder() {
     @Volatile private var foregroundState = -1
     private var watcherStarted = false
     @Volatile private var taskStackListenerStatus = "não registrado"
+    @Volatile private var foregroundWatchStartedAt = 0L
     private var taskStackListenerBinder: IBinder? = null
     private val foregroundCheckQueued = AtomicBoolean(false)
     private val foregroundExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
         Thread(runnable, "NexoPlay-ForegroundEvents").apply { isDaemon = true }
     }
     @Volatile private var mouseManaged = false
+    @Volatile private var editorMode = false
+    @Volatile private var editorMouseButtonDown = false
+    @Volatile private var configuredInitialMouseMode = "CURSOR"
     @Volatile private var grabMice = false
     @Volatile private var captureKeyboard = false
     @Volatile private var rightClickMode = "BACK"
@@ -616,10 +650,8 @@ class ShizukuInputUserService : Binder() {
     private var cursorFinger = -1
     private var cursorRightFinger = -1
     private val cursorUpdates = java.util.concurrent.LinkedBlockingDeque<CursorUpdate>(1)
-    private val cursorPublishLock = Any()
-    private var pendingCursorPublish: CursorUpdate? = null
-    private var cursorPublishScheduled = false
-    private var lastCursorPublishAt = 0L
+    private val editorPointerEvents = java.util.concurrent.LinkedBlockingQueue<EditorPointerEvent>(64)
+    private val pendingEditorMove = AtomicReference<EditorPointerEvent?>(null)
     @Volatile private var cursorSocket: android.net.LocalSocket? = null
     private val devices = ConcurrentHashMap<String, FileInputStream>()
     private val swipeExecutor = Executors.newSingleThreadExecutor { runnable ->
@@ -659,6 +691,7 @@ class ShizukuInputUserService : Binder() {
                 val emergencyKey = data.readString().orEmpty()
                 val captureKeyboard = data.readInt() == 1
                 val rightClickMode = data.readString().orEmpty()
+                val initialMouseMode = data.readString().orEmpty()
                 val status = try {
                     start(
                         game,
@@ -668,7 +701,8 @@ class ShizukuInputUserService : Binder() {
                         cursorSocketName,
                         emergencyKey,
                         captureKeyboard,
-                        rightClickMode
+                        rightClickMode,
+                        initialMouseMode
                     )
                 } catch (error: Throwable) {
                     Log.e(tag, "Falha ao iniciar o keymap", error)
@@ -703,6 +737,19 @@ class ShizukuInputUserService : Binder() {
             TRANSACTION_MOUSE_MODE -> {
                 setMouseLookActive(data.readInt() == 1)
             }
+            TRANSACTION_EDITOR_MODE -> {
+                setEditorMode(data.readInt() == 1)
+            }
+            TRANSACTION_UPDATE_MAPPING -> {
+                val json = data.readString().orEmpty()
+                val captureKeyboard = data.readInt() == 1
+                val emergencyKey = data.readString().orEmpty()
+                val rightClickMode = data.readString().orEmpty()
+                val status = updateMapping(json, captureKeyboard, emergencyKey, rightClickMode)
+                reply?.writeNoException()
+                reply?.writeString(status)
+                return true
+            }
             else -> return super.onTransact(code, data, reply, flags)
         }
         reply?.writeNoException()
@@ -718,7 +765,8 @@ class ShizukuInputUserService : Binder() {
         cursorSocketName: String,
         configuredEmergencyKey: String,
         captureKeyboard: Boolean,
-        rightClickMode: String
+        rightClickMode: String,
+        initialMouseMode: String
     ): String {
         stop()
         targetPackage = game
@@ -728,23 +776,21 @@ class ShizukuInputUserService : Binder() {
         cursorSpeed = CURSOR_SPEED
         bindings = parseMappings(json)
         emergencyKey = configuredEmergencyKey.ifBlank { "F12" }
+        configuredInitialMouseMode = initialMouseMode.takeIf { it == "MIRA" } ?: "CURSOR"
         this.captureKeyboard = captureKeyboard
         this.rightClickMode = rightClickMode
         chatMode = false
         chatEnterReleasePending = false
         lookControl = bindings.values.flatten().map { it.control }.firstOrNull { it.type == "MOUSE_LOOK" }
-        mouseManaged = emergencyKey.startsWith("MOUSE_") || bindings.any { (key, keyBindings) ->
-            key.startsWith("MOUSE_") || keyBindings.any {
-                it.control.type == "MOUSE_LOOK" || it.control.type == "MOUSE_DRAG"
-            }
-        }
-        mouseLookActive = lookControl != null
+        mouseManaged = shouldManageMouse(bindings)
+        mouseLookActive = lookControl != null && initialMouseMode == "MIRA"
         cursorX = width / 2f
         cursorY = height / 2f
         cursorFinger = -1
         cursorRightFinger = -1
         if (foregroundState < 0) foregroundState = 2
         foreground = foregroundState == 1
+        foregroundWatchStartedAt = SystemClock.elapsedRealtime()
         // The watcher also drives the show/hide of the floating panel, so it runs even
         // when there is no key mapped yet.
         ensureForegroundWatcher()
@@ -752,6 +798,8 @@ class ShizukuInputUserService : Binder() {
         val touch = TouchInjector()
         injector = touch
         running = true
+        editorMode = false
+        editorMouseButtonDown = false
         val runGeneration = ++generation
         grabMice = mouseManaged && foregroundState == 1
         grabKeyboard = captureKeyboard && foregroundState == 1
@@ -778,6 +826,8 @@ class ShizukuInputUserService : Binder() {
         running = false
         generation++
         cursorUpdates.clear()
+        editorPointerEvents.clear()
+        pendingEditorMove.set(null)
         try { cursorSocket?.close() } catch (_: Exception) { }
         cursorSocket = null
         grabMice = false
@@ -813,6 +863,8 @@ class ShizukuInputUserService : Binder() {
         injector = null
         lookControl = null
         mouseManaged = false
+        editorMode = false
+        editorMouseButtonDown = false
     }
 
     private fun isRunning(runGeneration: Int): Boolean = running && generation == runGeneration
@@ -1001,8 +1053,34 @@ class ShizukuInputUserService : Binder() {
         }
     }
 
+    private fun discoverMouseNodesForEditor() {
+        for ((path, stream) in devices.entries) {
+            if (path in knownMousePaths) continue
+            try {
+                val capabilities = NativeMouseGrab.capabilities(stream.fd)
+                if (capabilities < 0 || (capabilities and NativeMouseGrab.MOUSE_DEVICE) == 0) continue
+                knownMousePaths.add(path)
+                mouseNodeGroups[path] = try {
+                    NativeMouseGrab.identity(stream.fd).orEmpty().ifEmpty { "path:$path" }
+                } catch (error: Throwable) {
+                    Log.w(tag, "Não foi possível identificar o dispositivo em $path", error)
+                    "path:$path"
+                }
+                if ((capabilities and NativeMouseGrab.MOUSE_MOTION) != 0) mouseMotionPaths.add(path)
+                if (grabMice) setMouseGrab(path, stream, true)
+            } catch (error: Throwable) {
+                mouseGrabFailures[path] = (error.cause ?: error).message
+                    ?: error.javaClass.simpleName
+                Log.w(tag, "Não foi possível detectar o mouse para o editor em $path", error)
+            }
+        }
+        mouseCandidateSummary = knownMousePaths.sorted().joinToString { path ->
+            File(path).name + if (path in mouseMotionPaths) " (REL_X/Y)" else " (botões)"
+        }.ifEmpty { "mouse ainda não detectado" }
+    }
+
     private fun refreshKeyboardGrab() {
-        val want = running && captureKeyboard && !chatMode && foregroundState == 1
+        val want = running && captureKeyboard && !chatMode && !editorMode && foregroundState == 1
         if (want == grabKeyboard) return
         grabKeyboard = want
         for (path in capturableKeyboardPaths.toList()) {
@@ -1018,8 +1096,10 @@ class ShizukuInputUserService : Binder() {
             capturedGroups.isNotEmpty() ->
                 "${capturedGroups.size} dispositivo(s) com movimento capturado"
             grabbedPaths.isNotEmpty() -> "assumido parcialmente (${grabbedPaths.size}/${knownMousePaths.size} nó(s))"
-            knownMousePaths.isNotEmpty() -> "mouse detectado, mas não capturado; mira usa os eventos REL_X/REL_Y recebidos"
-            mouseGrabFailures.isNotEmpty() -> "falha: ${mouseGrabFailures.values.first()}"
+            mouseGrabFailures.isNotEmpty() ->
+                "AVISO: EVIOCGRAB falhou (${mouseGrabFailures.values.first()}); cursor nativo pode continuar visível"
+            knownMousePaths.isNotEmpty() ->
+                "AVISO: mouse detectado, mas não capturado; o Android pode manter o ponteiro nativo visível"
             else -> "aguardando nó do mouse ($mouseCandidateSummary)"
         }
     }
@@ -1201,7 +1281,12 @@ class ShizukuInputUserService : Binder() {
             }
             val state = readForegroundState(game)
             if (game == watchedPackage) applyForeground(state)
-            val fallbackInterval = if (taskStackListenerStatus == "registrado") 5000L else 1500L
+            val elapsed = SystemClock.elapsedRealtime() - foregroundWatchStartedAt
+            val fallbackInterval = when {
+                elapsed < FOREGROUND_FAST_POLL_MS -> 250L
+                taskStackListenerStatus == "registrado" -> 5000L
+                else -> 1500L
+            }
             try { Thread.sleep(fallbackInterval) } catch (_: InterruptedException) { return }
         }
     }
@@ -1250,7 +1335,7 @@ class ShizukuInputUserService : Binder() {
 
     private fun onMouseMove(path: String, deltaX: Int, deltaY: Int) {
         if (!foreground || !mouseManaged || path !in mouseMotionPaths ||
-            (!mouseLookActive && path !in grabbedPaths) || (deltaX == 0 && deltaY == 0)
+            (!mouseLookActive && !editorMode && path !in grabbedPaths) || (deltaX == 0 && deltaY == 0)
         ) return
         lastMouseDeltaX = deltaX
         lastMouseDeltaY = deltaY
@@ -1349,34 +1434,30 @@ class ShizukuInputUserService : Binder() {
                 pendingMoves.addAll(moveMouseDragControls(inputDeltaX, inputDeltaY))
             }
 
-            if (mouseLookActive) {
+            if (mouseLookActive && !editorMode) {
                 if (draggingControl) {
                     smoothedLookDeltaX = 0f
                     smoothedLookDeltaY = 0f
                     lastLookMotionAt = 0L
-                } else if (touch != null && (inputDeltaX != 0f || inputDeltaY != 0f)) {
+                } else if (touch != null) {
                     val now = SystemClock.elapsedRealtime()
                     val elapsedSinceLastMotion = now - lastLookMotionAt
-                    if (elapsedSinceLastMotion > LOOK_SMOOTHING_RESET_MS) {
-                        smoothedLookDeltaX = 0f
-                        smoothedLookDeltaY = 0f
-                    }
-                    val elapsedMs = elapsedSinceLastMotion
-                        .takeIf { it in 1..LOOK_SMOOTHING_RESET_MS }
-                        ?: MOUSE_MOTION_FRAME_MS
+                    val elapsedMs = elapsedSinceLastMotion.coerceIn(1L, LOOK_SMOOTHING_RESET_MS)
                     val smoothingPercent = (lookControl?.smoothing ?: DEFAULT_LOOK_SMOOTHING)
                         .coerceIn(0, 100) / 100f
                     val smoothingTimeMs = smoothingPercent * MAX_LOOK_SMOOTHING_TAU_MS
-                    val previousWeight = if (smoothingTimeMs == 0f) {
-                        0f
-                    } else {
+                    val decay = if (smoothingTimeMs == 0f) 0f else {
                         kotlin.math.exp(-elapsedMs.toDouble() / smoothingTimeMs.toDouble()).toFloat()
                     }
+                    if (inputDeltaX != 0f || inputDeltaY != 0f) {
+                        val inputWeight = 1f - decay
+                        smoothedLookDeltaX = smoothedLookDeltaX * decay + inputDeltaX * inputWeight
+                        smoothedLookDeltaY = smoothedLookDeltaY * decay + inputDeltaY * inputWeight
+                    } else {
+                        smoothedLookDeltaX *= decay
+                        smoothedLookDeltaY *= decay
+                    }
                     lastLookMotionAt = now
-                    smoothedLookDeltaX = if (inputDeltaX == 0f) 0f else
-                        smoothedLookDeltaX * previousWeight + inputDeltaX * (1f - previousWeight)
-                    smoothedLookDeltaY = if (inputDeltaY == 0f) 0f else
-                        smoothedLookDeltaY * previousWeight + inputDeltaY * (1f - previousWeight)
                     if (kotlin.math.abs(smoothedLookDeltaX) < LOOK_DELTA_EPSILON) smoothedLookDeltaX = 0f
                     if (kotlin.math.abs(smoothedLookDeltaY) < LOOK_DELTA_EPSILON) smoothedLookDeltaY = 0f
                     if (smoothedLookDeltaX != 0f || smoothedLookDeltaY != 0f) {
@@ -1384,6 +1465,11 @@ class ShizukuInputUserService : Binder() {
                         lookControl?.let {
                             moveLook(touch, it, smoothedLookDeltaX, smoothedLookDeltaY)?.let(pendingMoves::add)
                         }
+                    }
+                    if ((inputDeltaX == 0f && inputDeltaY == 0f) &&
+                        (smoothedLookDeltaX != 0f || smoothedLookDeltaY != 0f)
+                    ) {
+                        scheduleMouseMotionFlush(runGeneration)
                     }
                 }
             } else {
@@ -1399,6 +1485,9 @@ class ShizukuInputUserService : Binder() {
                         }
                     }
                     publishCursorState()
+                    if (editorMode && editorMouseButtonDown) {
+                        publishEditorPointerEvent(MotionEvent.ACTION_MOVE, cursorX.toInt(), cursorY.toInt())
+                    }
                 }
             }
         }
@@ -1433,11 +1522,34 @@ class ShizukuInputUserService : Binder() {
             control.lookY = anchorY
         }
         if (control.finger < 0) return null
-        control.lookX = (control.lookX + deltaX * control.sensitivityX * MOUSE_LOOK_SCALE)
-            .coerceIn(0f, (width - 1).toFloat())
-        control.lookY = (control.lookY + deltaY * control.sensitivityY * MOUSE_LOOK_SCALE)
-            .coerceIn(0f, (height - 1).toFloat())
+        val radiusX = (width * CAMERA_REGION_FRACTION).coerceAtLeast(MIN_CAMERA_REGION_PX)
+        val radiusY = (height * CAMERA_REGION_FRACTION).coerceAtLeast(MIN_CAMERA_REGION_PX)
+        val left = (anchorX - radiusX).coerceAtLeast(0f)
+        val right = (anchorX + radiusX).coerceAtMost((width - 1).toFloat())
+        val top = (anchorY - radiusY).coerceAtLeast(0f)
+        val bottom = (anchorY + radiusY).coerceAtMost((height - 1).toFloat())
+        val nextX = control.lookX + cameraDelta(deltaX, control.sensitivityX)
+        val nextY = control.lookY + cameraDelta(deltaY, control.sensitivityY)
+        if (nextX < left || nextX > right || nextY < top || nextY > bottom) {
+            val previousFinger = control.finger
+            val replacementFinger = touch.down(anchorX, anchorY)
+            if (replacementFinger >= 0) {
+                touch.up(previousFinger)
+                control.finger = replacementFinger
+                control.lookX = anchorX
+                control.lookY = anchorY
+            }
+        }
+        control.lookX = (control.lookX + cameraDelta(deltaX, control.sensitivityX)).coerceIn(left, right)
+        control.lookY = (control.lookY + cameraDelta(deltaY, control.sensitivityY)).coerceIn(top, bottom)
         return TouchMove(control.finger, control.lookX, control.lookY)
+    }
+
+    private fun cameraDelta(delta: Float, sensitivity: Float): Float {
+        val percent = (sensitivity / MAX_MOUSE_SENSITIVITY * 100f).coerceIn(0f, 100f)
+        if (percent == 0f) return 0f
+        val curve = (percent / 50f).toDouble().pow(1.5).toFloat()
+        return delta * curve * MOUSE_LOOK_CURVE_SCALE * MOUSE_LOOK_SCALE
     }
 
     private fun moveCursor(deltaX: Float, deltaY: Float) {
@@ -1476,7 +1588,93 @@ class ShizukuInputUserService : Binder() {
 
     /** The app cursor is only shown while FPS camera control is suspended. */
     private fun cursorVisible(): Boolean =
-        running && foreground && mouseManaged && !mouseLookActive && mouseCaptureComplete()
+        running && foreground && mouseManaged && (!mouseLookActive || editorMode) && mouseCaptureComplete()
+
+    private fun setEditorMode(active: Boolean) {
+        synchronized(lock) {
+            if (!running || editorMode == active) return
+            editorMode = active
+            mouseManaged = active || shouldManageMouse(bindings)
+            editorMouseButtonDown = false
+            editorPointerEvents.clear()
+            pendingEditorMove.set(null)
+            if (active) {
+                bindings.values.flatten().forEach { it.control.reset() }
+                pressedKeySources.clear()
+                injector?.releaseAll()
+                cursorFinger = -1
+                cursorRightFinger = -1
+                pendingMouseDeltaX = 0.0
+                pendingMouseDeltaY = 0.0
+                smoothedLookDeltaX = 0f
+                smoothedLookDeltaY = 0f
+                lastLookMotionAt = 0L
+            }
+        }
+        refreshMouseGrab()
+        if (active) discoverMouseNodesForEditor()
+        refreshKeyboardGrab()
+        publishCursorState()
+    }
+
+    private fun updateMapping(
+        json: String,
+        captureKeyboard: Boolean,
+        emergencyKey: String,
+        rightClickMode: String
+    ): String {
+        val updatedBindings = parseMappings(json)
+        val updatedLookControl = updatedBindings.values.flatten()
+            .map { it.control }.firstOrNull { it.type == "MOUSE_LOOK" }
+        synchronized(lock) {
+            bindings.values.flatten().forEach { it.control.reset() }
+            pressedKeySources.clear()
+            injector?.releaseAll()
+            bindings = updatedBindings
+            lookControl = updatedLookControl
+            this.captureKeyboard = captureKeyboard
+            this.emergencyKey = emergencyKey.ifBlank { "F12" }
+            this.rightClickMode = rightClickMode.takeIf { it == "LONG_PRESS" } ?: "BACK"
+            if (updatedLookControl == null) mouseLookActive = false
+            mouseManaged = editorMode || shouldManageMouse(updatedBindings)
+            cursorFinger = -1
+            cursorRightFinger = -1
+            pendingMouseDeltaX = 0.0
+            pendingMouseDeltaY = 0.0
+            smoothedLookDeltaX = 0f
+            smoothedLookDeltaY = 0f
+            lastLookMotionAt = 0L
+        }
+        refreshMouseGrab()
+        refreshKeyboardGrab()
+        publishCursorState()
+        return "Mapeamento atualizado"
+    }
+
+    private fun shouldManageMouse(mapping: Map<String, List<Binding>>): Boolean =
+        configuredInitialMouseMode == "CURSOR" || emergencyKey.startsWith("MOUSE_") ||
+            mapping.any { (key, keyBindings) ->
+                key.startsWith("MOUSE_") || keyBindings.any {
+                    it.control.type == "MOUSE_LOOK" || it.control.type == "MOUSE_DRAG"
+                }
+            }
+
+    private fun publishEditorPointerEvent(action: Int, x: Int, y: Int) {
+        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+            pendingEditorMove.getAndSet(null)?.let { move ->
+                if (!editorPointerEvents.offer(move)) {
+                    Log.e(tag, "Fila de eventos do editor cheia; movimento final do mouse não foi encaminhado")
+                }
+            }
+        }
+        val event = EditorPointerEvent(action, x, y)
+        if (action == MotionEvent.ACTION_MOVE) {
+            pendingEditorMove.set(event)
+        } else if (!editorPointerEvents.offer(event)) {
+            Log.e(tag, "Fila de eventos do editor cheia; evento do mouse não foi encaminhado")
+        }
+        publishCursorState()
+    }
 
     private fun capturedMouseGroups(): Set<String> =
         mouseNodeGroups.entries
@@ -1502,10 +1700,35 @@ class ShizukuInputUserService : Binder() {
                     val output = java.io.DataOutputStream(socket.outputStream)
                     while (isRunning(runGeneration)) {
                         val update = cursorUpdates.poll(500, TimeUnit.MILLISECONDS) ?: continue
-                        output.writeInt(update.x)
-                        output.writeInt(update.y)
-                        output.writeBoolean(update.visible)
-                        output.writeBoolean(update.mouseLookActive)
+                        writeCursorMessage(
+                            output,
+                            update.x,
+                            update.y,
+                            update.visible,
+                            update.mouseLookActive,
+                            CURSOR_MESSAGE_STATE
+                        )
+                        while (true) {
+                            val event = editorPointerEvents.poll() ?: break
+                            writeCursorMessage(
+                                output,
+                                event.x,
+                                event.y,
+                                update.visible,
+                                update.mouseLookActive,
+                                event.action
+                            )
+                        }
+                        pendingEditorMove.getAndSet(null)?.let { event ->
+                            writeCursorMessage(
+                                output,
+                                event.x,
+                                event.y,
+                                update.visible,
+                                update.mouseLookActive,
+                                event.action
+                            )
+                        }
                         output.flush()
                     }
                 } catch (error: Exception) {
@@ -1524,6 +1747,21 @@ class ShizukuInputUserService : Binder() {
         publishCursorState()
     }
 
+    private fun writeCursorMessage(
+        output: java.io.DataOutputStream,
+        x: Int,
+        y: Int,
+        visible: Boolean,
+        lookActive: Boolean,
+        action: Int
+    ) {
+        output.writeInt(x)
+        output.writeInt(y)
+        output.writeBoolean(visible)
+        output.writeBoolean(lookActive)
+        output.writeInt(action)
+    }
+
     private fun publishCursorState() {
         val update = CursorUpdate(
             cursorX.toInt(),
@@ -1531,26 +1769,6 @@ class ShizukuInputUserService : Binder() {
             cursorVisible(),
             mouseLookActive
         )
-        val delayMs = synchronized(cursorPublishLock) {
-            pendingCursorPublish = update
-            if (cursorPublishScheduled) return
-            cursorPublishScheduled = true
-            (CURSOR_PUSH_FRAME_MS - (SystemClock.elapsedRealtime() - lastCursorPublishAt))
-                .coerceAtLeast(0L)
-        }
-        responseExecutor.schedule({
-            val latest = synchronized(cursorPublishLock) {
-                val state = pendingCursorPublish
-                pendingCursorPublish = null
-                cursorPublishScheduled = false
-                if (state != null) lastCursorPublishAt = SystemClock.elapsedRealtime()
-                state
-            }
-            if (latest != null) enqueueCursorUpdate(latest)
-        }, delayMs, TimeUnit.MILLISECONDS)
-    }
-
-    private fun enqueueCursorUpdate(update: CursorUpdate) {
         if (!cursorUpdates.offer(update)) {
             cursorUpdates.poll()
             cursorUpdates.offer(update)
@@ -1563,6 +1781,8 @@ class ShizukuInputUserService : Binder() {
         val visible: Boolean,
         val mouseLookActive: Boolean
     )
+
+    private data class EditorPointerEvent(val action: Int, val x: Int, val y: Int)
 
     private data class TouchMove(val finger: Int, val x: Float, val y: Float)
 
@@ -1631,6 +1851,18 @@ class ShizukuInputUserService : Binder() {
         if (down && key == emergencyKey) {
             Log.w(tag, "Tecla de emergência acionada; liberando entradas e pausando o motor")
             stop()
+            return
+        }
+        if (editorMode) {
+            if (key == "MOUSE_LEFT" && capturedMouseInput) {
+                if (down) {
+                    editorMouseButtonDown = true
+                    publishEditorPointerEvent(MotionEvent.ACTION_DOWN, cursorX.toInt(), cursorY.toInt())
+                } else {
+                    editorMouseButtonDown = false
+                    publishEditorPointerEvent(MotionEvent.ACTION_UP, cursorX.toInt(), cursorY.toInt())
+                }
+            }
             return
         }
         if (key.startsWith("MOUSE_") && !capturedMouseInput && down) return
@@ -1922,7 +2154,7 @@ class ShizukuInputUserService : Binder() {
         return when (item.optInt("sensitivityScale", 0)) {
             100 -> (value.coerceIn(0f, 100f) / 100f) * MAX_MOUSE_SENSITIVITY
             1000 -> (value.coerceIn(0f, 3000f) / 1000f).coerceAtMost(MAX_MOUSE_SENSITIVITY)
-            else -> value.coerceIn(0.1f, 4f).coerceAtMost(MAX_MOUSE_SENSITIVITY)
+            else -> value.coerceIn(0f, MAX_MOUSE_SENSITIVITY)
         }
     }
 
@@ -1973,6 +2205,9 @@ class ShizukuInputUserService : Binder() {
         const val TRANSACTION_STATE = IBinder.FIRST_CALL_TRANSACTION + 2
         const val TRANSACTION_STATUS = IBinder.FIRST_CALL_TRANSACTION + 3
         const val TRANSACTION_MOUSE_MODE = IBinder.FIRST_CALL_TRANSACTION + 4
+        const val TRANSACTION_EDITOR_MODE = IBinder.FIRST_CALL_TRANSACTION + 5
+        const val TRANSACTION_UPDATE_MAPPING = IBinder.FIRST_CALL_TRANSACTION + 6
+        const val CURSOR_MESSAGE_STATE = -1
         const val EV_SYN = 0
         const val EV_KEY = 1
         const val EV_REL = 2
@@ -1991,9 +2226,11 @@ class ShizukuInputUserService : Binder() {
         const val MAX_LOOK_SMOOTHING_TAU_MS = 8f
         const val LOOK_SMOOTHING_RESET_MS = 80L
         const val MAX_MOUSE_SENSITIVITY = 3f
+        const val MOUSE_LOOK_CURVE_SCALE = 0.45f
+        const val CAMERA_REGION_FRACTION = 0.35f
+        const val MIN_CAMERA_REGION_PX = 64f
         const val LOOK_DELTA_EPSILON = 0.001f
-        const val MOUSE_MOTION_FRAME_MS = 8L
-        const val CURSOR_PUSH_FRAME_MS = 16L
+        const val MOUSE_MOTION_FRAME_MS = 4L
         const val MOUSE_DRAG_SCALE = 1.0f
         const val CURSOR_SPEED = 1.6f
         const val UP = 0
@@ -2003,6 +2240,7 @@ class ShizukuInputUserService : Binder() {
         const val SWIPE_DISTANCE = 96f
         const val DEFAULT_JOYSTICK_RANGE = 120f
         const val JOYSTICK_RELEASE_GRACE_MS = 80L
+        const val FOREGROUND_FAST_POLL_MS = 3500L
         val SUPPORTED_TYPES = setOf("TOUCH", "SWIPE", "MOUSE_PICK", "JOYSTICK", "MOUSE_LOOK", "MOUSE_DRAG")
 
         /**

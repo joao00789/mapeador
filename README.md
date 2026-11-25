@@ -1,5 +1,7 @@
 # B13 MAUSE PRO
 
+Versão de desenvolvimento: **0.7.2** (`versionCode 22`).
+
 Primeira versão em desenvolvimento do B13 MAUSE PRO, um mapeador Android com launcher
 de jogos, editor de controles sobreposto e botão flutuante. A tela Iniciar jogo abre por
 padrão (abas: Iniciar jogo e Configurações); selecione um app instalado e toque em **Iniciar** para abrir o jogo com a
@@ -26,17 +28,18 @@ A tecla configurável também inclui Arrasto Mouse: mantenha a tecla pressionada
 o mouse para arrastar um toque virtual. Dê dois toques numa área vazia do editor para
 adicionar um controle Toque; o tamanho dos indicadores e o raio do joystick podem ser
 ajustados individualmente.
-A seta própria aparece quando há controle de mouse e o nó de movimento foi capturado.
-Com Mouse FPS, a mira começa ativa e a tecla configurada (Alt esquerdo por padrão)
+A seta própria aparece quando o mouse é capturado (no modo CURSOR, inclusive ao abrir o editor).
+O modo inicial é configurável (padrão CURSOR); a tecla configurada (Alt esquerdo por padrão)
 alterna entre mira e cursor suspenso, preservando a posição da seta. Ajuste sensibilidades
 X/Y (0–100) e suavização (0–100) no marcador Mouse FPS.
 
 Mouse próprio: o app captura o mouse somente quando o keymap usa controles de mouse e o jogo
 está confirmado em primeiro plano. No modo cursor, o botão esquerdo toca na posição da seta;
 o direito envia Voltar por padrão (configurável para toque longo) e o botão do meio toca nessa
-posição. Um mapeamento explícito dos botões substitui o padrão. O cursor usa uma janela opaca própria e recebe posição por socket
-local; sua seta fica sobre o painel. A tecla de Mouse FPS alterna MIRA/CURSOR sem recentralizar
-a posição do cursor.
+posição. Um mapeamento explícito dos botões substitui o padrão. O cursor usa uma janela
+própria de tela cheia e recebe posição por socket local; o conteúdo é atualizado uma vez por
+frame. A opacidade da janela permanece limitada para permitir toque-through em Android 12+.
+A tecla de Mouse FPS alterna MIRA/CURSOR sem recentralizar a posição do cursor.
 
 A roda vertical/horizontal é injetada no jogo quando não tiver ação mapeada, e pode ser capturada
 no editor para disparar um controle. A tecla de emergência é configurável (padrão F12) e libera
@@ -45,9 +48,11 @@ quando ativada, teclas sem mapeamento são repassadas e Enter libera o teclado p
 solto. O foco do jogo é acompanhado por callback interno quando disponível e por polling fallback;
 o diagnóstico informa se a API interna foi registrada.
 
-Esta versão ainda não foi validada em aparelho. Captura evdev, injeção, janelas sobrepostas,
-socket local e APIs internas de foco precisam de teste em dispositivos e versões Android/OEM
-suportadas. Se o Android bloquear `EVIOCGRAB`, a captura pode falhar; consulte Diagnóstico.
+Esta versão ainda não foi validada em aparelho. A compilação local foi bloqueada porque o NDK
+27.2 está incompleto e a tentativa de instalá-lo ficou sem espaço em disco. Captura evdev,
+injeção, janelas sobrepostas, socket local,
+recentralização do dedo e APIs internas de foco precisam de teste em dispositivos e versões
+Android/OEM suportadas. Se o Android bloquear `EVIOCGRAB`, a captura pode falhar; consulte Diagnóstico.
 
 ## Gerar o APK
 
@@ -56,6 +61,23 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 `nexoplay-debug-apk` na seção **Artifacts** da execução.
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
+
+## Novidades da 0.7.2
+
+- O editor mantém o motor e a captura do mouse ativos; o serviço encaminha down/move/up pelo
+  socket local e o app os despacha aos controles do editor. Ao sair, aplica o JSON atualizado
+  sem reiniciar o motor e preserva a posição do cursor.
+- Cursor e eventos são coalescidos; o movimento é processado em quadros de 4 ms e a UI recebe
+  a posição no máximo uma vez por frame. Se o editor abre sem captura prévia, o serviço descobre
+  e tenta capturar os nós de mouse já abertos.
+- Sensibilidade X/Y usa curva progressiva 0–100, filtro temporal com decaimento e região de
+  câmera limitada com handoff de dedo. A escala antiga é migrada uma vez, preservando outros
+  campos do JSON. Há ação para restaurar o padrão do Mouse FPS.
+- Adicionadas preferências de modo inicial MIRA/CURSOR, tema de tokens em `B13Theme.kt`,
+  menu flutuante com grade hexagonal e barra de editor compacta.
+- `gradle :app:compileDebugKotlin` não pôde concluir: o NDK 27.2 configurado está incompleto;
+  a instalação pelo SDK Manager foi interrompida por falta de espaço em disco. Não houve teste
+  em aparelho.
 
 ## Novidades da 0.7.1
 

@@ -106,12 +106,12 @@ import org.json.JSONObject
 import rikka.shizuku.Shizuku
 import kotlin.math.roundToInt
 
-private val Ink = Color(0xFF1A0709)
-private val Panel = Color(0xFF9B1C27)
-private val Muted = Color(0xFFF3CDD0)
-private val Accent = Color(0xFFFF6B6B)
-private val TextPrimary = Color(0xFFFFE9EA)
-private val PanelDark = Color(0xFF3A0B10)
+private val Ink = B13Theme.Background
+private val Panel = B13Theme.Panel
+private val Muted = B13Theme.Muted
+private val Accent = B13Theme.Accent
+private val TextPrimary = B13Theme.TextPrimary
+private val PanelDark = B13Theme.PanelDark
 
 private enum class ComponentType(val title: String) {
     TOUCH("Toque"),
@@ -218,6 +218,9 @@ private fun MapeadorApp() {
     var indicatorColor by remember {
         mutableStateOf(preferences.getString("indicator_color2", "Branco") ?: "Branco")
     }
+    var initialMouseMode by remember {
+        mutableStateOf(preferences.getString("initial_mouse_mode", "CURSOR") ?: "CURSOR")
+    }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -267,6 +270,9 @@ private fun MapeadorApp() {
     LaunchedEffect(indicatorColor) {
         preferences.edit().putString("indicator_color2", indicatorColor).apply()
     }
+    LaunchedEffect(initialMouseMode) {
+        preferences.edit().putString("initial_mouse_mode", initialMouseMode).apply()
+    }
 
     Scaffold(
         containerColor = Ink,
@@ -314,6 +320,7 @@ private fun MapeadorApp() {
                 )
                 AppPage.SETTINGS -> SettingsPage(
                     shizukuState = shizukuState,
+                    initialMouseMode = initialMouseMode,
                     indicatorsEnabled = indicatorsEnabled,
                     indicatorOpacity = indicatorOpacity,
                     indicatorColor = indicatorColor,
@@ -327,6 +334,7 @@ private fun MapeadorApp() {
                             else -> Shizuku.requestPermission(1001)
                         }
                     },
+                    onInitialMouseModeChange = { initialMouseMode = it },
                     onIndicatorsChange = { indicatorsEnabled = it },
                     onOpacityChange = { indicatorOpacity = it },
                     onColorChange = { indicatorColor = it }
@@ -1001,10 +1009,12 @@ private fun FpsViewDialog(
 @Composable
 private fun SettingsPage(
     shizukuState: String,
+    initialMouseMode: String,
     indicatorsEnabled: Boolean,
     indicatorOpacity: Float,
     indicatorColor: String,
     onConnectShizuku: () -> Unit,
+    onInitialMouseModeChange: (String) -> Unit,
     onIndicatorsChange: (Boolean) -> Unit,
     onOpacityChange: (Float) -> Unit,
     onColorChange: (String) -> Unit
@@ -1041,6 +1051,29 @@ private fun SettingsPage(
                     context.startActivity(
                         Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:${context.packageName}"))
                     )
+                }
+            }
+        }
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Panel),
+            shape = RoundedCornerShape(14.dp)
+        ) {
+            Column(Modifier.padding(12.dp)) {
+                Text("Modo inicial do mouse", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    "O modo usado ao abrir um jogo. Você pode alternar durante a partida.",
+                    color = Muted,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(top = 3.dp)
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+                    listOf("CURSOR" to "Cursor", "MIRA" to "Mira").forEach { (mode, label) ->
+                        FilterChip(
+                            selected = initialMouseMode == mode,
+                            onClick = { onInitialMouseModeChange(mode) },
+                            label = { Text(label) }
+                        )
+                    }
                 }
             }
         }

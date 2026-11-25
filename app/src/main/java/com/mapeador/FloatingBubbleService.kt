@@ -11,6 +11,7 @@ import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Canvas
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
@@ -22,6 +23,7 @@ import android.provider.Settings
 import android.util.Log
 import android.net.LocalServerSocket
 import android.view.Gravity
+import android.view.Choreographer
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -92,7 +94,7 @@ private class CursorView(context: android.content.Context) : View(context) {
         style = Paint.Style.FILL
     }
     private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFE5484D.toInt()
+        color = B13Theme.ACCENT_ARGB
         style = Paint.Style.STROKE
         strokeWidth = resources.displayMetrics.density * 1.5f
     }
@@ -112,6 +114,57 @@ private class CursorView(context: android.content.Context) : View(context) {
         arrow.close()
         canvas.drawPath(arrow, fill)
         canvas.drawPath(arrow, outline)
+    }
+}
+
+private class HexagonIconView(
+    context: android.content.Context,
+    private val symbol: String,
+    private val label: String,
+    enabled: Boolean
+) : View(context) {
+    private val polygon = Path()
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = B13Theme.PANEL_DARK_ARGB
+        alpha = if (enabled) 255 else 120
+        style = Paint.Style.FILL
+    }
+    private val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = B13Theme.ACCENT_ARGB
+        alpha = if (enabled) 255 else 120
+        style = Paint.Style.STROKE
+        strokeWidth = resources.displayMetrics.density * 2f
+    }
+    private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        alpha = if (enabled) 255 else 150
+        textAlign = Paint.Align.CENTER
+        textSize = resources.displayMetrics.density * 24f
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+    }
+
+    init {
+        contentDescription = label
+        isFocusable = false
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        val radius = minOf(width, height) * 0.46f
+        val centerX = width / 2f
+        val centerY = height / 2f
+        polygon.reset()
+        for (index in 0 until 6) {
+            val angle = Math.toRadians((index * 60 - 90).toDouble())
+            val x = centerX + kotlin.math.cos(angle).toFloat() * radius
+            val y = centerY + kotlin.math.sin(angle).toFloat() * radius
+            if (index == 0) polygon.moveTo(x, y) else polygon.lineTo(x, y)
+        }
+        polygon.close()
+        canvas.drawPath(polygon, fill)
+        canvas.drawPath(polygon, outline)
+        val baseline = centerY - (text.ascent() + text.descent()) / 2f
+        canvas.drawText(symbol, centerX, baseline, text)
     }
 }
 
@@ -337,6 +390,7 @@ class FloatingBubbleService : Service() {
     /** False while the game is not in front: the bubble and the key indicators are hidden. */
     private var overlaysVisible = true
     private var cursorView: View? = null
+    private var cursorOverlay: FrameLayout? = null
     private var cursorShown = false
     private var cursorNeedsElevation = false
     private var cursorParams: WindowManager.LayoutParams? = null
@@ -346,19 +400,33 @@ class FloatingBubbleService : Service() {
     private var cursorScale = 1f
     private val cursorPushLock = Any()
     private var pendingCursorState: ShizukuInputBridge.EngineState? = null
-    private var cursorUpdatePosted = false
+    private var cursorFrameCallbackPosted = false
+    private val cursorFrameCallback = Choreographer.FrameCallback {
+        val latest = synchronized(cursorPushLock) {
+            pendingCursorState.also {
+                pendingCursorState = null
+                cursorFrameCallbackPosted = false
+            }
+        } ?: return@FrameCallback
+        lastEngineState = latest
+        updateCursor(latest)
+    }
     @Volatile private var cursorSocketRunning = false
     private val cursorSocketName = "mapeador_cursor_${UUID.randomUUID().toString().replace("-", "")}"
     private var cursorServerSocket: LocalServerSocket? = null
     private var cursorSocketThread: Thread? = null
+    private var editorMouseDownTime = 0L
     private var missedPolls = 0
     private var lastReconnectAt = 0L
+    private var gameLaunchAt = 0L
     private var diagnosticsView: View? = null
     private var diagnosticsText: TextView? = null
     private val statePoller = object : Runnable {
         override fun run() {
             pollEngineState()
-            handler.postDelayed(this, if (cursorShown) 250L else 750L)
+            val starting = SystemClock.elapsedRealtime() - gameLaunchAt < 4000L &&
+                lastEngineState?.foreground != 1
+            handler.postDelayed(this, if (starting || cursorShown) 250L else 750L)
         }
     }
     private val diagnosticsTicker = object : Runnable {
@@ -380,10 +448,40 @@ class FloatingBubbleService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        migrateSensitivitySchemaOnce()
         getSharedPreferences(PREFERENCES, MODE_PRIVATE).registerOnSharedPreferenceChangeListener(preferenceListener)
         startAsForegroundService()
         startCursorSocket()
         if (Settings.canDrawOverlays(this)) showBubble() else stopSelf()
+    }
+
+    private fun migrateSensitivitySchemaOnce() {
+        val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+        if (preferences.getBoolean("sensitivity_schema_v1", false)) return
+        val saved = try {
+            JSONArray(preferences.getString(MAPPING, "[]") ?: "[]")
+        } catch (error: JSONException) {
+            Log.e(TAG, "Não foi possível migrar a escala de sensibilidade; o mapeamento foi mantido", error)
+            preferences.edit().putBoolean("sensitivity_schema_v1", true).apply()
+            return
+        }
+        var changed = false
+        for (index in 0 until saved.length()) {
+            val item = saved.optJSONObject(index) ?: continue
+            val scale = item.optInt("sensitivityScale", 0)
+            if (scale == 100 || (!item.has("sensitivityX") && !item.has("sensitivityY"))) continue
+            try {
+                if (item.has("sensitivityX")) item.put("sensitivityX", item.sensitivityValue("sensitivityX").toDouble())
+                if (item.has("sensitivityY")) item.put("sensitivityY", item.sensitivityValue("sensitivityY").toDouble())
+                item.put("sensitivityScale", 100)
+                changed = true
+            } catch (error: JSONException) {
+                Log.e(TAG, "Não foi possível migrar a sensibilidade de um controle", error)
+            }
+        }
+        val update = preferences.edit().putBoolean("sensitivity_schema_v1", true)
+        if (changed) update.putString(MAPPING, saved.toString())
+        update.apply()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -397,6 +495,7 @@ class FloatingBubbleService : Service() {
         val gamePackage = intent?.getStringExtra(FloatingBubbleIntent.GAME_PACKAGE)
         if (!gamePackage.isNullOrBlank()) {
             activeGamePackage = gamePackage
+            gameLaunchAt = SystemClock.elapsedRealtime()
             if (bubble == null && Settings.canDrawOverlays(this)) showBubble()
             // The game is still opening and may be rotating to landscape: start now and
             // once more shortly after, so the engine always has the final screen size.
@@ -420,7 +519,11 @@ class FloatingBubbleService : Service() {
     private fun relayoutForScreenSize() {
         val manager = windowManager ?: return
         val (width, height) = realScreenSize()
-        listOf(keymapOverlay to keymapParams, editor to editorParams).forEach { (view, params) ->
+        listOf(
+            keymapOverlay to keymapParams,
+            editor to editorParams,
+            cursorOverlay to cursorParams
+        ).forEach { (view, params) ->
             if (view != null && params != null && (params.width != width || params.height != height)) {
                 params.width = width
                 params.height = height
@@ -467,7 +570,7 @@ class FloatingBubbleService : Service() {
         // Green = engine running and the game in front; yellow = running but cannot tell.
         setBubbleStatus(if (state.foreground == 2) 0xFFFFCC00.toInt() else 0xFF34C759.toInt())
         applyGameVisibility(state.foreground == 1)
-        updateCursor(state)
+        publishPushedCursor(state)
     }
 
     /** The bubble border shows if the key engine is connected (green), unsure (yellow) or down (red). */
@@ -489,7 +592,9 @@ class FloatingBubbleService : Service() {
         bubble?.visibility = mode
         keymapOverlay?.visibility = mode
         editor?.visibility = mode
+        cursorOverlay?.visibility = mode
         if (!visible) {
+            cursorShown = false
             closeMenu()
             closeDiagnostics()
         }
@@ -501,45 +606,51 @@ class FloatingBubbleService : Service() {
         val manager = windowManager
         if (manager == null || !state.cursorVisible || !overlaysVisible) {
             cursorShown = false
-            cursorView?.visibility = View.GONE
+            removeOverlay(cursorOverlay)
             return
         }
         cursorShown = true
-        var view = cursorView
-        if (view == null) {
-            view = CursorView(this).apply {
+        var overlay = cursorOverlay
+        if (overlay == null) {
+            val view = CursorView(this).apply {
                 alpha = 1f
                 isClickable = false
                 isFocusable = false
             }
             cursorView = view
+            overlay = FrameLayout(this).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                addView(view, FrameLayout.LayoutParams(
+                    dp((24 * cursorScale).toInt().coerceIn(18, 60)),
+                    dp((34 * cursorScale).toInt().coerceIn(24, 80))
+                ))
+            }
+            cursorOverlay = overlay
         }
         val params = cursorParams ?: run {
             cursorScale = readControls().firstOrNull { it.type == "MOUSE_LOOK" }?.cursorSize ?: 1f
-            WindowManager.LayoutParams(
-                dp((24 * cursorScale).toInt().coerceIn(18, 60)),
-                dp((34 * cursorScale).toInt().coerceIn(24, 80)),
-                overlayWindowType(),
+            fullScreenParams(
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                alpha = 1f
-                x = state.cursorX
-                y = state.cursorY
-            }.also { cursorParams = it }
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            ).apply { alpha = 0.8f }.also { cursorParams = it }
         }
-        view.visibility = View.VISIBLE
-        params.x = state.cursorX
-        params.y = state.cursorY
-        params.width = dp((24 * cursorScale).toInt().coerceIn(18, 60))
-        params.height = dp((34 * cursorScale).toInt().coerceIn(24, 80))
+        val cursorWidth = dp((24 * cursorScale).toInt().coerceIn(18, 60))
+        val cursorHeight = dp((34 * cursorScale).toInt().coerceIn(24, 80))
+        cursorView?.let { view ->
+            val viewParams = view.layoutParams as? FrameLayout.LayoutParams
+            if (viewParams == null || viewParams.width != cursorWidth || viewParams.height != cursorHeight) {
+                view.layoutParams = FrameLayout.LayoutParams(cursorWidth, cursorHeight)
+            }
+        }
+        overlay.visibility = View.VISIBLE
+        cursorView?.apply {
+            visibility = View.VISIBLE
+            translationX = state.cursorX.toFloat()
+            translationY = state.cursorY.toFloat()
+            invalidate()
+        }
         try {
-            if (view.parent == null) manager.addView(view, params)
-            else manager.updateViewLayout(view, params)
+            if (overlay.parent == null) manager.addView(overlay, params)
             if (cursorNeedsElevation) {
                 cursorNeedsElevation = false
                 bringCursorOverlayToFront()
@@ -570,9 +681,6 @@ class FloatingBubbleService : Service() {
             isFocusable = false
         }.also { mouseModeIndicator = it }
         val modeLabel = if (state.mouseLookActive) "MIRA" else "CURSOR"
-        if (indicator.parent != null && indicator.visibility == View.VISIBLE && indicator.text == modeLabel) {
-            return
-        }
         indicator.text = modeLabel
         val params = mouseModeParams ?: WindowManager.LayoutParams(
             dp(108),
@@ -583,10 +691,11 @@ class FloatingBubbleService : Service() {
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
-            y = dp(8)
+                gravity = Gravity.TOP or Gravity.END
             alpha = 1f
         }.also { mouseModeParams = it }
+        params.x = dp(12)
+        params.y = dp(if (editor == null) 8 else 132)
         indicator.visibility = View.VISIBLE
         try {
             if (indicator.parent == null) manager.addView(indicator, params)
@@ -598,20 +707,16 @@ class FloatingBubbleService : Service() {
     }
 
     private fun publishPushedCursor(state: ShizukuInputBridge.EngineState) {
+        var scheduleFrame = false
         synchronized(cursorPushLock) {
             pendingCursorState = state
-            if (cursorUpdatePosted) return
-            cursorUpdatePosted = true
+            if (!cursorFrameCallbackPosted) {
+                cursorFrameCallbackPosted = true
+                scheduleFrame = true
+            }
         }
-        handler.post {
-            val latest = synchronized(cursorPushLock) {
-                pendingCursorState.also {
-                    pendingCursorState = null
-                    cursorUpdatePosted = false
-                }
-            } ?: return@post
-            lastEngineState = latest
-            updateCursor(latest)
+        if (scheduleFrame) handler.post {
+            Choreographer.getInstance().postFrameCallback(cursorFrameCallback)
         }
     }
 
@@ -631,16 +736,21 @@ class FloatingBubbleService : Service() {
                                     val y = input.readInt()
                                     val visible = input.readBoolean()
                                     val mouseLookActive = input.readBoolean()
+                                    val action = input.readInt()
                                     val foreground = lastEngineState?.foreground ?: 2
-                                    publishPushedCursor(
-                                        ShizukuInputBridge.EngineState(
-                                            foreground,
-                                            visible,
-                                            x,
-                                            y,
-                                            mouseLookActive
+                                    if (action == -1) {
+                                        publishPushedCursor(
+                                            ShizukuInputBridge.EngineState(
+                                                foreground,
+                                                visible,
+                                                x,
+                                                y,
+                                                mouseLookActive
+                                            )
                                         )
-                                    )
+                                    } else {
+                                        dispatchEditorPointerEvent(action, x, y)
+                                    }
                                 }
                             }
                         }
@@ -663,6 +773,32 @@ class FloatingBubbleService : Service() {
             cursorServerSocket?.close()
         } catch (error: Exception) {
             Log.w(TAG, "Não foi possível fechar o canal local do cursor", error)
+        }
+
+        private fun dispatchEditorPointerEvent(action: Int, x: Int, y: Int) {
+            handler.post {
+                val target = editor ?: return@post
+                val now = SystemClock.uptimeMillis()
+                if (action == MotionEvent.ACTION_DOWN) editorMouseDownTime = now
+                val downTime = editorMouseDownTime.takeIf { it > 0L } ?: now
+                val event = MotionEvent.obtain(
+                    downTime,
+                    now,
+                    action,
+                    x.toFloat(),
+                    y.toFloat(),
+                    0
+                )
+                event.setSource(InputDevice.SOURCE_MOUSE)
+                try {
+                    target.dispatchTouchEvent(event)
+                } finally {
+                    event.recycle()
+                    if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                        editorMouseDownTime = 0L
+                    }
+                }
+            }
         }
         cursorServerSocket = null
         cursorSocketThread = null
@@ -751,7 +887,9 @@ class FloatingBubbleService : Service() {
             getSharedPreferences(PREFERENCES, MODE_PRIVATE)
                 .getBoolean(CAPTURE_KEYBOARD, false),
             getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-                .getString(RIGHT_CLICK_MODE, "BACK").orEmpty()
+                .getString(RIGHT_CLICK_MODE, "BACK").orEmpty(),
+            getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .getString(INITIAL_MOUSE_MODE, "CURSOR").orEmpty()
         )
     }
 
@@ -789,7 +927,7 @@ class FloatingBubbleService : Service() {
         }
 
     private fun styledSeekBar(): SeekBar = SeekBar(this).apply {
-        progressTintList = ColorStateList.valueOf(0xFFFF6B6B.toInt())
+        progressTintList = ColorStateList.valueOf(B13Theme.ACCENT_ARGB)
         thumbTintList = ColorStateList.valueOf(0xFFFF8A8A.toInt())
         progressBackgroundTintList = ColorStateList.valueOf(0x66FFFFFF)
     }
@@ -836,8 +974,9 @@ class FloatingBubbleService : Service() {
         handler.removeCallbacks(statePoller)
         stopCursorSocket()
         closeDiagnostics()
-        removeOverlay(cursorView)
+        removeOverlay(cursorOverlay)
         removeOverlay(mouseModeIndicator)
+        cursorOverlay = null
         cursorView = null
         cursorParams = null
         mouseModeIndicator = null
@@ -1121,18 +1260,7 @@ class FloatingBubbleService : Service() {
             isFocusable = item.enabled
             if (item.enabled) setOnClickListener { item.onClick() }
             addView(
-                TextView(this@FloatingBubbleService).apply {
-                    text = item.symbol
-                    textSize = 24f
-                    gravity = Gravity.CENTER
-                    setTextColor(Color.WHITE)
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        cornerRadius = dp(16).toFloat()
-                        setColor(0xFF200608.toInt())
-                        setStroke(dp(2), 0xFFE5484D.toInt())
-                    }
-                },
+                HexagonIconView(this@FloatingBubbleService, item.symbol, item.label, item.enabled),
                 LinearLayout.LayoutParams(dp(60), dp(60))
             )
             addView(
@@ -1199,7 +1327,6 @@ class FloatingBubbleService : Service() {
         if (editor != null) return
         closeMenu()
         hideKeymapOverlay()
-        ShizukuInputBridge.stopMapping()
         val manager = windowManager ?: return
         val root = KeyCaptureFrame(this).apply {
             isFocusableInTouchMode = true
@@ -1221,6 +1348,7 @@ class FloatingBubbleService : Service() {
         try {
             manager.addView(root, params)
             editor = root
+            ShizukuInputBridge.setEditorMode(true)
             bringCursorOverlayToFront()
             buildEditorHeader(root)
             renderControls(root)
@@ -1243,38 +1371,47 @@ class FloatingBubbleService : Service() {
         }
         fun cell(label: String, onClick: () -> Unit): TextView = TextView(this).apply {
             text = label
-            textSize = 12f
+            textSize = 10.5f
             gravity = Gravity.CENTER
             setTextColor(Color.WHITE)
-            setPadding(dp(6), dp(4), dp(6), dp(4))
+            setPadding(dp(3), dp(4), dp(3), dp(4))
+            minHeight = dp(B13Theme.MIN_TOUCH_TARGET_DP)
+            maxLines = 2
             isClickable = true
             isFocusable = true
             setOnClickListener { onClick() }
         }
         fun row(vararg cells: TextView): LinearLayout = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            cells.forEach { addView(it, LinearLayout.LayoutParams(0, dp(40), 1f)) }
+            cells.forEach { addView(it, LinearLayout.LayoutParams(0, dp(B13Theme.MIN_TOUCH_TARGET_DP), 1f)) }
         }
         fun divider(): View = View(this).apply { setBackgroundColor(0x55FFFFFF) }
 
-        panel.addView(
-            row(
-                cell("Sair") { closeEditor() },
-                cell("Adicionar\ncomponente") { showComponentPicker() },
-                cell("Salvar") {
+        val actions: List<Pair<String, () -> Unit>> = listOf(
+            "Sair" to { closeEditor() },
+            "Adicionar" to { showComponentPicker() },
+            "Salvar" to {
                     writeControls(readControls())
                     Toast.makeText(this@FloatingBubbleService, "Mapeamento salvo.", Toast.LENGTH_SHORT).show()
-                }
-            )
+                },
+            "Compart." to { shareControls() },
+            "Importar" to { showImportDialog() },
+            "Limpar" to { showResetConfirmation() }
         )
-        panel.addView(divider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1))
-        panel.addView(
-            row(
-                cell("Compartilhar") { shareControls() },
-                cell("Importar") { showImportDialog() },
-                cell("Limpar") { showResetConfirmation() }
-            )
-        )
+        val actionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        actions.forEachIndexed { index, (label, action) ->
+            actionRow.addView(cell(label, action), LinearLayout.LayoutParams(0, dp(B13Theme.MIN_TOUCH_TARGET_DP), 1f))
+            if (index != actions.lastIndex) {
+                actionRow.addView(
+                    View(this).apply { setBackgroundColor(0x66FFFFFF) },
+                    LinearLayout.LayoutParams(dp(1), dp(28))
+                )
+            }
+        }
+        panel.addView(actionRow)
         panel.addView(divider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1))
         val keyboardCaptureCell = cell(
             if (getSharedPreferences(PREFERENCES, MODE_PRIVATE)
@@ -1292,12 +1429,6 @@ class FloatingBubbleService : Service() {
                 Toast.LENGTH_SHORT
             ).show()
         }
-        panel.addView(
-            row(
-                cell("Emergência: ${keyLabel(getEmergencyKey())}") { beginEmergencyKeyCapture() },
-                keyboardCaptureCell
-            )
-        )
         val rightClickCell = cell("Clique direito: ${rightClickLabel()}") { }
         rightClickCell.setOnClickListener {
             val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
@@ -1307,10 +1438,15 @@ class FloatingBubbleService : Service() {
                 "BACK"
             }
             preferences.edit().putString(RIGHT_CLICK_MODE, next).apply()
-            rightClickCell.text = "Clique direito: ${rightClickLabel()}"
+            rightClickCell.text = "Direito: ${rightClickLabel()}"
         }
-        panel.addView(divider(), LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1))
-        panel.addView(row(rightClickCell))
+        panel.addView(
+            row(
+                cell("Emergência: ${keyLabel(getEmergencyKey())}") { beginEmergencyKeyCapture() },
+                keyboardCaptureCell,
+                rightClickCell
+            )
+        )
         root.addView(
             panel,
             FrameLayout.LayoutParams(
@@ -1458,9 +1594,6 @@ class FloatingBubbleService : Service() {
     private fun hideKeymapOverlay() {
         removeOverlay(keymapOverlay)
         keymapOverlay = null
-        cursorView?.visibility = View.GONE
-        cursorShown = false
-        mouseModeIndicator?.visibility = View.GONE
     }
 
     private fun showResetConfirmation() {
@@ -1880,7 +2013,7 @@ class FloatingBubbleService : Service() {
             writeControls(readControls().map { if (it.id == id) it.copy(sensitivityY = next) else it })
         }
         card.addView(TextView(this).apply {
-            text = "Referência: 33 = padrão (1x) • 100 = máximo (3x)"
+            text = "Curva progressiva; a velocidade do cursor é independente."
             textSize = 11f
             setTextColor(0xFFFFE3E4.toInt())
             setPadding(0, dp(2), 0, dp(6))
@@ -1954,15 +2087,10 @@ class FloatingBubbleService : Service() {
             writeControls(readControls().map { if (it.id == id) it.copy(cursorSize = size) else it })
             cursorScale = size
             cursorView?.let { view ->
-                cursorParams?.let { params ->
-                    params.width = dp((24 * size).toInt().coerceIn(18, 60))
-                    params.height = dp((34 * size).toInt().coerceIn(24, 80))
-                    try {
-                        windowManager?.updateViewLayout(view, params)
-                    } catch (error: IllegalArgumentException) {
-                        Log.w(TAG, "A janela do cursor não está anexada", error)
-                    }
-                }
+                view.layoutParams = FrameLayout.LayoutParams(
+                    dp((24 * size).toInt().coerceIn(18, 60)),
+                    dp((34 * size).toInt().coerceIn(24, 80))
+                )
             }
         }
         val buttons = LinearLayout(this).apply {
@@ -1970,9 +2098,24 @@ class FloatingBubbleService : Service() {
             addView(actionButton("Alterar tecla") {
                 closeControlSettings()
                 beginCapture(id)
-            }, LinearLayout.LayoutParams(0, dp(44), 1f))
-            addView(actionButton("Concluir") { closeControlSettings() },
-                LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(8) })
+            }, LinearLayout.LayoutParams(0, dp(B13Theme.MIN_TOUCH_TARGET_DP), 1f))
+            addView(actionButton("Restaurar padrão") {
+                writeControls(readControls().map {
+                    if (it.id == id) it.copy(
+                        sensitivityX = 100f / 3f,
+                        sensitivityY = 100f / 3f,
+                        smoothing = 35,
+                        sizeScale = 1f,
+                        cursorSpeed = 1.6f,
+                        cursorSize = 1f
+                    ) else it
+                })
+                cursorScale = 1f
+                closeControlSettings()
+                showControlSettings(id)
+            }, LinearLayout.LayoutParams(0, dp(B13Theme.MIN_TOUCH_TARGET_DP), 1f))
+            addView(actionButton("Fechar") { closeControlSettings() },
+                LinearLayout.LayoutParams(0, dp(B13Theme.MIN_TOUCH_TARGET_DP), 1f))
         }
         card.addView(buttons, LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
@@ -1984,11 +2127,16 @@ class FloatingBubbleService : Service() {
                 FrameLayout.LayoutParams.WRAP_CONTENT
             ))
         }
+        val settingsHeight = minOf(
+            (screenHeight() * 0.85f).toInt(),
+            (screenHeight() - dp(150)).coerceAtLeast(dp(120)),
+            dp(500)
+        )
         scrim.addView(scroll, FrameLayout.LayoutParams(
             (screenWidth() - dp(32)).coerceAtMost(dp(340)),
-            (screenHeight() - dp(48)).coerceAtMost(dp(500)),
-            Gravity.CENTER
-        ))
+            settingsHeight,
+            Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+        ).apply { bottomMargin = dp(12) })
         root.addView(scrim, FrameLayout.LayoutParams(
             FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
         ))
@@ -2326,8 +2474,15 @@ class FloatingBubbleService : Service() {
         resetConfirmation = null
         controlSettings = null
         importDialog = null
+        val preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+        ShizukuInputBridge.updateMapping(
+            mappingPayload(),
+            preferences.getBoolean(CAPTURE_KEYBOARD, false),
+            preferences.getString(EMERGENCY_KEY, "F12").orEmpty(),
+            preferences.getString(RIGHT_CLICK_MODE, "BACK").orEmpty()
+        )
+        ShizukuInputBridge.setEditorMode(false)
         showKeymapOverlay()
-        startEngine()
     }
 
     private fun closeMenu() {
@@ -2654,7 +2809,7 @@ class FloatingBubbleService : Service() {
     private fun bringCursorOverlayToFront() {
         val manager = windowManager ?: return
         if (cursorShown) {
-            val view = cursorView
+            val view = cursorOverlay
             val params = cursorParams
             if (view != null && params != null && view.parent != null) {
                 try {
@@ -2688,6 +2843,7 @@ class FloatingBubbleService : Service() {
         const val EMERGENCY_CAPTURE_TARGET = "__emergency_key__"
         const val CAPTURE_KEYBOARD = "capture_keyboard"
         const val RIGHT_CLICK_MODE = "right_click_mode"
+        const val INITIAL_MOUSE_MODE = "initial_mouse_mode"
         const val CONTROL_TAG = "nexoplay-mapping-control"
         const val KEY_SIZE_DP = 40
         const val JOYSTICK_SIZE_DP = 88

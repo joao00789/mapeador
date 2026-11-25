@@ -30,10 +30,12 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 4. Só age com o jogo confirmado em primeiro plano. O serviço tenta observar mudanças de tarefa
    com `ITaskStackListener` via reflexão e mantém `dumpsys activity activities` como fallback
    (5 s quando registrado; 1,5 s se indisponível). Se não confirmar o foco, solta toques e libera capturas.
-5. Motor pausado enquanto o editor está aberto; reinicia ao fechar o editor ou ao mudar o mapeamento.
+5. Ao abrir o editor, o motor continua lendo o mouse, libera dedos virtuais do jogo e ativa o
+   modo editor. O socket local encaminha botões e movimentos ao overlay; ao fechar, o JSON é
+   atualizado no Binder sem reiniciar o motor, preservando a posição do cursor.
 6. O serviço devolve uma mensagem de status que o app mostra em Toast.
 
-## Visibilidade e mouse (desde 0.5.0; estado atual 0.7.1)
+## Visibilidade e mouse (desde 0.5.0; estado atual 0.7.2)
 - O serviço observa foco por `ITaskStackListener` refletido e mantém polling de fallback;
   o app consulta o estado a cada 250 ms quando o cursor está visível e 750 ms quando oculto.
   Só o estado confirmado como foreground mantém captura; estados desconhecidos liberam entradas.
@@ -45,13 +47,14 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
   o keymap tem controle de mouse; captura de teclado é opcional. O menu → Diagnóstico mostra
   disponibilidade da API de foco, dispositivos, estado de captura e erros.
 
-## Captura e teclado (0.7.0)
+## Captura e teclado (0.7.0–0.7.2)
 - O serviço só captura o mouse se houver controle Mouse FPS, Arrasto Mouse, tecla de mouse ou
   tecla de emergência configurada como botão do mouse. A captura é alternada em cada fd sem
   fechar/reabrir os streams. `EVIOCGRAB` recebe o valor inteiro (0/1), e os nós são agrupados
   por `EVIOCGPHYS`/`EVIOCGUNIQ` com fallback para identidade do dispositivo.
 - O cursor considera capturado o nó REL_X/REL_Y, mesmo quando outros nós do mouse falham.
-  Sua posição chega pelo socket local e é desenhada em janela própria opaca, acima do painel;
+  Sua posição chega pelo socket local, é coalescida e desenhada em janela de tela cheia atualizada
+  por frame; opacidade limitada permite toque-through em Android 12+;
   o estado mostra o indicador MIRA/CURSOR. Suspender/retomar preserva a última posição do cursor.
 - A roda vertical/horizontal é injetada como `ACTION_SCROLL` quando não houver ação mapeada.
   É possível capturar a roda no editor e associá-la a um controle. No modo cursor, o botão
@@ -69,6 +72,14 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 (× raio ajustável entre 20% e 150%), `JOYSTICK_MIN_DP = 24`.
 
 ## Histórico
+- 0.7.2 — O editor deixa de parar o motor: modo editor mantém a captura e envia eventos de botão
+  pelo socket para interação com marcadores; ao sair, atualiza o mapeamento sem reinício. O
+  mouse passa por curva progressiva de sensibilidade 0–100, filtro temporal com decaimento e
+  recentralização por handoff em região limitada. Preferência para MIRA/CURSOR ao iniciar,
+  migração única de escalas preservando os demais campos do JSON, tokens visuais em
+  `B13Theme.kt`, menu hexagonal e barra compacta. Compilação local não validada: o NDK
+  configurado está incompleto e o SDK Manager ficou sem espaço ao tentar instalá-lo. Requer
+  teste em aparelho, especialmente EVIOCGRAB, passagem de toques e handoff.
 - 0.7.1 — Corrigido o acúmulo de janelas do cursor: ao abrir o editor, a janela dedicada
   agora é ocultada e reutilizada, sem perder sua referência nem criar setas extras. Painéis
   de configuração/importação ficam acima da barra do editor, com dimensões mais compactas;
