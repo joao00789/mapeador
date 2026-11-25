@@ -20,11 +20,16 @@ Acessibilidade. Se o Shizuku estiver rodando como ADB shell, o acesso aos dispos
 de entrada depende da versão e das permissões do fabricante.
 
 A biblioteca mostra os ícones dos apps instalados. No editor, Toque, Mouse Pick,
-Deslizar, Joystick (WASD ou Setas) e Mouse FPS são executados. O Mouse FPS lê os deltas
-REL_X/REL_Y do mouse e os converte em arrastos de dedo na área de câmera configurada.
+Deslizar, Joystick (WASD ou Setas), Mouse FPS e Arrasto Mouse são executados. O Mouse FPS
+lê os deltas REL_X/REL_Y do mouse e os converte em arrastos de dedo na área de câmera configurada.
+A tecla configurável também inclui Arrasto Mouse: mantenha a tecla pressionada e mova
+o mouse para arrastar um toque virtual. Dê dois toques numa área vazia do editor para
+adicionar um controle Toque; o tamanho dos indicadores e o raio do joystick podem ser
+ajustados individualmente.
 A seta própria aparece ao iniciar o jogo, mesmo sem um componente Mouse FPS no keymap.
 Com Mouse FPS, a mira começa ativa e a tecla configurada (Alt esquerdo por padrão)
-alterna entre mira e cursor suspenso. Ajuste sensibilidades X/Y no marcador Mouse FPS.
+alterna entre mira e cursor suspenso. Ajuste sensibilidades X/Y (0–3000) e suavização
+(0–100) no marcador Mouse FPS.
 
 Mouse próprio: o app tenta capturar os nós USB do mouse enquanto o jogo está na frente,
 impedindo o Android de mover seu cursor por conta própria. No modo cursor, o botão esquerdo
@@ -42,6 +47,17 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 `nexoplay-debug-apk` na seção **Artifacts** da execução.
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
+
+## Novidades da 0.6.5
+
+- Sensibilidade X/Y do Mouse FPS ajustável de 0 a 3000 e suavização configurável de 0 a 100;
+  os valores salvos em versões anteriores são convertidos ao novo intervalo.
+- O cursor próprio começa no centro da tela ao suspender a mira, e a atualização dos
+  movimentos usa quadros de 4 ms.
+- Novo Arrasto Mouse: uma tecla mantém um toque ativo enquanto os deltas do mouse movem
+  esse toque. Dois toques numa área vazia do editor adicionam um controle Toque.
+- Tamanho individual das teclas e raio do joystick ajustáveis; sliders e biblioteca de
+  aplicativos receberam cores e formas de maior contraste.
 
 ## Novidades da 0.6.4
 

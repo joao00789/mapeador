@@ -73,7 +73,7 @@ object ShizukuInputBridge {
         ).daemon(false)
             .processNameSuffix("input")
             .tag("nexoplay-input")
-            .version(11)
+            .version(12)
         val serviceConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
                 remote = binder
@@ -553,8 +553,8 @@ class ShizukuInputUserService : Binder() {
         lookControl = bindings.values.flatten().map { it.control }.firstOrNull { it.type == "MOUSE_LOOK" }
         mouseManaged = true
         mouseLookActive = lookControl != null
-        cursorX = 0f
-        cursorY = 0f
+        cursorX = width / 2f
+        cursorY = height / 2f
         cursorFinger = -1
         if (foregroundState < 0) foregroundState = 2
         foreground = foregroundState != 0
@@ -863,17 +863,32 @@ class ShizukuInputUserService : Binder() {
             mouseMotionFlushScheduled = false
             if (!foreground || !mouseManaged) return
 
+            val touch = injector?.takeIf { it.available }
+            val draggingControl = bindings.values.asSequence()
+                .flatten()
+                .any { it.control.type == "MOUSE_DRAG" && it.control.finger >= 0 }
+            if (touch != null && draggingControl && (inputDeltaX != 0f || inputDeltaY != 0f)) {
+                moveMouseDragControls(touch, inputDeltaX, inputDeltaY)
+            }
+
             if (mouseLookActive) {
+                if (draggingControl) {
+                    smoothedLookDeltaX = 0f
+                    smoothedLookDeltaY = 0f
+                    return
+                }
+                if (touch == null) return
+                val smoothing = (lookControl?.smoothing ?: DEFAULT_LOOK_SMOOTHING)
+                    .coerceIn(0, 100) / 100f * MAX_LOOK_DELTA_SMOOTHING
                 smoothedLookDeltaX =
-                    smoothedLookDeltaX * LOOK_DELTA_SMOOTHING + inputDeltaX * (1f - LOOK_DELTA_SMOOTHING)
+                    smoothedLookDeltaX * smoothing + inputDeltaX * (1f - smoothing)
                 smoothedLookDeltaY =
-                    smoothedLookDeltaY * LOOK_DELTA_SMOOTHING + inputDeltaY * (1f - LOOK_DELTA_SMOOTHING)
+                    smoothedLookDeltaY * smoothing + inputDeltaY * (1f - smoothing)
                 if (kotlin.math.abs(smoothedLookDeltaX) < LOOK_DELTA_EPSILON) smoothedLookDeltaX = 0f
                 if (kotlin.math.abs(smoothedLookDeltaY) < LOOK_DELTA_EPSILON) smoothedLookDeltaY = 0f
                 if (smoothedLookDeltaX == 0f && smoothedLookDeltaY == 0f) return
-                val touch = injector?.takeIf { it.available } ?: return
                 lookControl?.let { moveLook(touch, it, smoothedLookDeltaX, smoothedLookDeltaY) }
-                if (smoothedLookDeltaX != 0f || smoothedLookDeltaY != 0f) {
+                if (smoothing > 0f && (smoothedLookDeltaX != 0f || smoothedLookDeltaY != 0f)) {
                     scheduleMouseMotionFlush(runGeneration)
                 }
             } else {
@@ -884,6 +899,21 @@ class ShizukuInputUserService : Binder() {
                 if (cursorFinger >= 0) injector?.move(cursorFinger, cursorX, cursorY)
             }
         }
+    }
+
+    private fun moveMouseDragControls(touch: TouchInjector, deltaX: Float, deltaY: Float) {
+        bindings.values.asSequence()
+            .flatten()
+            .map { it.control }
+            .distinct()
+            .filter { it.type == "MOUSE_DRAG" && it.finger >= 0 }
+            .forEach { control ->
+                control.lookX = (control.lookX + deltaX * control.sensitivityX * MOUSE_DRAG_SCALE)
+                    .coerceIn(0f, (width - 1).toFloat())
+                control.lookY = (control.lookY + deltaY * control.sensitivityY * MOUSE_DRAG_SCALE)
+                    .coerceIn(0f, (height - 1).toFloat())
+                touch.move(control.finger, control.lookX, control.lookY)
+            }
     }
 
     /** Applies relative mouse movement to one touch; camera deltas remain unbounded at screen edges. */
@@ -918,8 +948,8 @@ class ShizukuInputUserService : Binder() {
             }
             if (cursorFinger >= 0) touch?.cancel(cursorFinger)
             cursorFinger = -1
-            cursorX = 0f
-            cursorY = 0f
+            cursorX = width / 2f
+            cursorY = height / 2f
             pendingMouseDeltaX = 0.0
             pendingMouseDeltaY = 0.0
             smoothedLookDeltaX = 0f
@@ -987,7 +1017,8 @@ class ShizukuInputUserService : Binder() {
         lastKeyAt = SystemClock.elapsedRealtime()
         if (key.startsWith("MOUSE_") && !capturedMouseInput) return
         val mouseLookShortcut = bindings[key].orEmpty().any { it.control.type == "MOUSE_LOOK" }
-        if (key == "MOUSE_LEFT" && !mouseLookActive && !mouseLookShortcut) {
+        val mouseDragShortcut = bindings[key].orEmpty().any { it.control.type == "MOUSE_DRAG" }
+        if (key == "MOUSE_LEFT" && !mouseLookActive && !mouseLookShortcut && !mouseDragShortcut) {
             synchronized(lock) {
                 val touch = injector ?: return
                 if (down) {
@@ -1013,7 +1044,9 @@ class ShizukuInputUserService : Binder() {
         synchronized(lock) {
             val touch = injector ?: return
             val control = binding.control
-            if (control.pressMode == "TAP" && control.type != "JOYSTICK") {
+            if (control.pressMode == "TAP" &&
+                control.type != "JOYSTICK" && control.type != "MOUSE_DRAG"
+            ) {
                 if (down) when (control.type) {
                     "TOUCH", "MOUSE_PICK" -> {
                         pressTouch(touch, control)
@@ -1027,9 +1060,17 @@ class ShizukuInputUserService : Binder() {
                 "MOUSE_LOOK" -> if (down) toggleMouseMode()
                 "TOUCH", "MOUSE_PICK" -> if (down) pressTouch(touch, control) else releaseTouch(touch, control)
                 "SWIPE" -> if (down) swipe(touch, control)
+                "MOUSE_DRAG" -> if (down) pressMouseDrag(touch, control) else releaseTouch(touch, control)
                 "JOYSTICK" -> moveJoystick(touch, control, binding.direction, down)
             }
         }
+    }
+
+    private fun pressMouseDrag(touch: TouchInjector, control: Control) {
+        if (control.finger >= 0 || !touch.available) return
+        control.lookX = pixelX(control)
+        control.lookY = pixelY(control)
+        control.finger = touch.down(control.lookX, control.lookY)
     }
 
     private fun pixelX(control: Control) = (control.x * width).coerceIn(0f, (width - 1).toFloat())
@@ -1157,8 +1198,9 @@ class ShizukuInputUserService : Binder() {
                 item.optDouble("y", 0.5).toFloat().coerceIn(0f, 1f),
                 item.optDouble("rangePx", 0.0).toFloat().takeIf { it > 1f } ?: DEFAULT_JOYSTICK_RANGE,
                 item.optBoolean("stopOnOpposite", true),
-                item.optDouble("sensitivityX", 1.0).toFloat().coerceIn(0.1f, 4f),
-                item.optDouble("sensitivityY", 1.0).toFloat().coerceIn(0.1f, 4f)
+                item.optDouble("sensitivityX", 1000.0).toFloat().coerceIn(0f, 3000f) / 1000f,
+                item.optDouble("sensitivityY", 1000.0).toFloat().coerceIn(0f, 3000f) / 1000f,
+                item.optInt("smoothing", DEFAULT_LOOK_SMOOTHING).coerceIn(0, 100)
             )
             control.pressMode = item.optString("pressMode", "HOLD")
             control.responseMs = item.optInt("responseMs", 0).coerceIn(0, 300)
@@ -1203,7 +1245,8 @@ class ShizukuInputUserService : Binder() {
         val range: Float,
         val stopOnOpposite: Boolean,
         val sensitivityX: Float,
-        val sensitivityY: Float
+        val sensitivityY: Float,
+        val smoothing: Int
     ) {
         var finger = -1
         var lookX = 0f
@@ -1242,9 +1285,11 @@ class ShizukuInputUserService : Binder() {
         const val REL_X = 0
         const val REL_Y = 1
         const val MOUSE_LOOK_SCALE = 1.0f
-        const val LOOK_DELTA_SMOOTHING = 0.35f
+        const val DEFAULT_LOOK_SMOOTHING = 35
+        const val MAX_LOOK_DELTA_SMOOTHING = 0.8f
         const val LOOK_DELTA_EPSILON = 0.001f
-        const val MOUSE_MOTION_FRAME_MS = 8L
+        const val MOUSE_MOTION_FRAME_MS = 4L
+        const val MOUSE_DRAG_SCALE = 1.0f
         const val CURSOR_SPEED = 1.6f
         const val UP = 0
         const val DOWN = 1
@@ -1253,7 +1298,7 @@ class ShizukuInputUserService : Binder() {
         const val SWIPE_DISTANCE = 96f
         const val DEFAULT_JOYSTICK_RANGE = 120f
         const val JOYSTICK_RELEASE_GRACE_MS = 80L
-        val SUPPORTED_TYPES = setOf("TOUCH", "SWIPE", "MOUSE_PICK", "JOYSTICK", "MOUSE_LOOK")
+        val SUPPORTED_TYPES = setOf("TOUCH", "SWIPE", "MOUSE_PICK", "JOYSTICK", "MOUSE_LOOK", "MOUSE_DRAG")
 
         /**
          * Linux input codes (input-event-codes.h) -> the Android key names the editor saves

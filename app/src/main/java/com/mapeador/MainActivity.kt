@@ -61,10 +61,12 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.Shapes
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -174,6 +176,11 @@ class MainActivity : ComponentActivity() {
                     onPrimary = Color.White,
                     onBackground = TextPrimary,
                     onSurface = TextPrimary
+                ),
+                shapes = Shapes(
+                    small = RoundedCornerShape(12.dp),
+                    medium = RoundedCornerShape(16.dp),
+                    large = RoundedCornerShape(22.dp)
                 )
             ) {
                 Surface(
@@ -633,7 +640,7 @@ private fun GamesPage(
 private fun ConnectionChip(title: String, subtitle: String, modifier: Modifier = Modifier) {
     Card(
         modifier = modifier,
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = PanelDark),
         shape = RoundedCornerShape(14.dp)
     ) {
         Column(Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
@@ -695,7 +702,7 @@ private fun GamePickerDialog(
         BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Card(
                 modifier = Modifier.fillMaxWidth(0.76f).fillMaxHeight(0.88f),
-                colors = CardDefaults.cardColors(containerColor = Color.White),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF2B0C10)),
                 shape = RoundedCornerShape(24.dp)
             ) {
                 Column(Modifier.fillMaxSize().padding(18.dp)) {
@@ -725,6 +732,7 @@ private fun GamePickerDialog(
                             items(availableGames, key = { it.packageName }) { game ->
                                 Row(
                                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp))
+                                        .background(PanelDark, RoundedCornerShape(14.dp))
                                         .clickable { onSelect(game) }.padding(horizontal = 8.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -1039,7 +1047,16 @@ private fun SettingsPage(
                     }
                 }
                 Text("Transparência: ${(indicatorOpacity * 100).roundToInt()}%", color = Muted)
-                Slider(value = indicatorOpacity, onValueChange = onOpacityChange, valueRange = 0.15f..1f)
+                Slider(
+                    value = indicatorOpacity,
+                    onValueChange = onOpacityChange,
+                    valueRange = 0.15f..1f,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Accent,
+                        activeTrackColor = Accent,
+                        inactiveTrackColor = Color.White.copy(alpha = 0.22f)
+                    )
+                )
                 Text("Prévia", color = Muted)
                 Box(
                     modifier = Modifier
@@ -1123,7 +1140,16 @@ private fun SettingSlider(
                 Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                 Text("${(value * 100).roundToInt()}%", color = Accent)
             }
-            Slider(value = value, onValueChange = onValueChange, valueRange = valueRange)
+            Slider(
+                value = value,
+                onValueChange = onValueChange,
+                valueRange = valueRange,
+                colors = SliderDefaults.colors(
+                    thumbColor = Accent,
+                    activeTrackColor = Accent,
+                    inactiveTrackColor = Color.White.copy(alpha = 0.22f)
+                )
+            )
             Text(hint, color = Muted, fontSize = 11.sp)
         }
     }

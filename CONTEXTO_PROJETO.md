@@ -25,6 +25,8 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
    - TOUCH / MOUSE_PICK: toque DOWN ao apertar, UP ao soltar (segura = segura o toque).
    - SWIPE: arrasta 96 px na horizontal.
    - JOYSTICK: toque no centro e MOVE até `rangePx` na direção das teclas (WASD ou Setas).
+   - MOUSE_DRAG: mantém um toque no ponto configurado enquanto a tecla está pressionada e
+     aplica os deltas físicos do mouse a esse dedo.
 4. Só age com o jogo em primeiro plano (`dumpsys activity activities`, a cada 1 s; se o formato
    for desconhecido, não bloqueia). Ao perder o foco, solta todos os toques.
 5. Motor pausado enquanto o editor está aberto; reinicia ao fechar o editor ou ao mudar o mapeamento.
@@ -44,9 +46,16 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
 - Menu da bolha → Diagnóstico (`buildStatus` no serviço Shizuku): usar para descobrir por que algo não funciona.
 
 ## Tamanhos (FloatingBubbleService.kt, companion)
-`KEY_SIZE_DP = 40`, `JOYSTICK_SIZE_DP = 88` (× raio 0.35–1.0), `JOYSTICK_MIN_DP = 56`.
+`KEY_SIZE_DP = 40` (ajustável por controle entre 50% e 200%), `JOYSTICK_SIZE_DP = 88`
+(× raio ajustável entre 20% e 150%), `JOYSTICK_MIN_DP = 24`.
 
 ## Histórico
+- 0.6.5 — Sensibilidade X/Y do Mouse FPS passa a 0–3000 (1000 = escala anterior) e inclui
+  suavização ajustável 0–100; os mapeamentos antigos são migrados ao serem lidos/salvos.
+  Cursor próprio centralizado ao suspender a mira; movimento processado em quadros de 4 ms.
+  Adicionado Arrasto Mouse (tecla segura um toque que acompanha o mouse), toque duplo em
+  área vazia para adicionar Toque, tamanho individual de teclas e raio de joystick ajustáveis.
+  Contraste da biblioteca e estilo de botões/sliders refinados.
 - 0.6.4 — Mouse FPS passa a acumular deltas além das bordas da tela, sem limitar a posição do
   dedo virtual; a entrada relativa segue fluida durante movimentos longos.
 - 0.6.3 — Deltas da mira FPS suavizados em quadros curtos com preservação do movimento acumulado;
