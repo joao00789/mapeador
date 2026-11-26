@@ -246,6 +246,7 @@ private class KeyCaptureFrame(context: android.content.Context) : FrameLayout(co
     var onKeyCaptured: ((String) -> Unit)? = null
     var onBackgroundDoubleTap: ((Float, Float) -> Unit)? = null
     var captureEnabled = false
+    var mouseCaptureButton: String? = null
     private var lastBackgroundTapAt = 0L
     private var lastBackgroundTapX = 0f
     private var lastBackgroundTapY = 0f
@@ -782,13 +783,39 @@ class FloatingBubbleService : Service() {
     private fun dispatchEditorPointerEvent(action: Int, x: Int, y: Int) {
         handler.post {
             val target = editor ?: return@post
+            val button = when (action) {
+                EDITOR_MOUSE_LEFT_DOWN, EDITOR_MOUSE_LEFT_UP -> "MOUSE_LEFT"
+                EDITOR_MOUSE_RIGHT_DOWN, EDITOR_MOUSE_RIGHT_UP -> "MOUSE_RIGHT"
+                EDITOR_MOUSE_MIDDLE_DOWN, EDITOR_MOUSE_MIDDLE_UP -> "MOUSE_MIDDLE"
+                else -> null
+            }
+            val isButtonDown = action == EDITOR_MOUSE_LEFT_DOWN ||
+                action == EDITOR_MOUSE_RIGHT_DOWN || action == EDITOR_MOUSE_MIDDLE_DOWN
+            val isButtonUp = action == EDITOR_MOUSE_LEFT_UP ||
+                action == EDITOR_MOUSE_RIGHT_UP || action == EDITOR_MOUSE_MIDDLE_UP
+            val mouseCaptureButton = button
+            val dispatchAction = when {
+                mouseCaptureButton == null -> action
+                isButtonDown && target.captureEnabled -> {
+                    target.mouseCaptureButton = mouseCaptureButton
+                    target.onKeyCaptured?.invoke(mouseCaptureButton)
+                    return@post
+                }
+                isButtonUp && target.mouseCaptureButton == mouseCaptureButton -> {
+                    target.mouseCaptureButton = null
+                    return@post
+                }
+                mouseCaptureButton == "MOUSE_LEFT" && isButtonDown -> MotionEvent.ACTION_DOWN
+                mouseCaptureButton == "MOUSE_LEFT" && isButtonUp -> MotionEvent.ACTION_UP
+                else -> return@post
+            }
             val now = SystemClock.uptimeMillis()
-            if (action == MotionEvent.ACTION_DOWN) editorMouseDownTime = now
+            if (dispatchAction == MotionEvent.ACTION_DOWN) editorMouseDownTime = now
             val downTime = editorMouseDownTime.takeIf { it > 0L } ?: now
             val event = MotionEvent.obtain(
                 downTime,
                 now,
-                action,
+                dispatchAction,
                 x.toFloat(),
                 y.toFloat(),
                 0
@@ -798,7 +825,7 @@ class FloatingBubbleService : Service() {
                 target.dispatchTouchEvent(event)
             } finally {
                 event.recycle()
-                if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
+                if (dispatchAction == MotionEvent.ACTION_UP || dispatchAction == MotionEvent.ACTION_CANCEL) {
                     editorMouseDownTime = 0L
                 }
             }
@@ -2014,7 +2041,7 @@ class FloatingBubbleService : Service() {
             writeControls(readControls().map { if (it.id == id) it.copy(sensitivityY = next) else it })
         }
         card.addView(TextView(this).apply {
-            text = "Curva progressiva; a velocidade do cursor é independente."
+            text = "Resposta linear: 33% equivale à escala padrão; a velocidade do cursor é independente."
             textSize = 11f
             setTextColor(0xFFFFE3E4.toInt())
             setPadding(0, dp(2), 0, dp(6))
@@ -2277,7 +2304,7 @@ class FloatingBubbleService : Service() {
         return List(array.length()) { index ->
             val item = array.getJSONObject(index)
             val type = item.getString("type")
-            require(COMPONENT_TYPES.any { it.first == type }) { "componente desconhecido: $type" }
+            require(type in STORED_CONTROL_TYPES) { "componente desconhecido: $type" }
             val x = item.optDouble("x", 0.5).toFloat()
             val y = item.optDouble("y", 0.5).toFloat()
             require(x.isFinite() && y.isFinite()) { "posição inválida no controle ${index + 1}" }
@@ -2313,22 +2340,30 @@ class FloatingBubbleService : Service() {
             Toast.makeText(this, "Já existe um controle Mouse FPS. Configure o marcador atual.", Toast.LENGTH_SHORT).show()
             return
         }
+        val mouseButtonKey = when (type) {
+            "MOUSE_LEFT_BUTTON" -> "MOUSE_LEFT"
+            "MOUSE_RIGHT_BUTTON" -> "MOUSE_RIGHT"
+            else -> null
+        }
+        val controlType = if (mouseButtonKey != null) "TOUCH" else type
         val offset = (items.size % 5) * 0.1f
         val control = OverlayControl(
             id = UUID.randomUUID().toString(),
-            type = type,
+            type = controlType,
             key = when (type) {
                 "JOYSTICK" -> "WASD"
                 "MOUSE_LOOK" -> "ALT_LEFT"
-                else -> "Tecla?"
+                else -> mouseButtonKey ?: "Tecla?"
             },
-            x = position?.first ?: if (type == "MOUSE_LOOK") 0.76f else 0.28f + offset,
-            y = position?.second ?: if (type == "MOUSE_LOOK") 0.56f else 0.56f + (items.size % 3) * 0.08f
+            x = position?.first ?: if (controlType == "MOUSE_LOOK") 0.76f else 0.28f + offset,
+            y = position?.second ?: if (controlType == "MOUSE_LOOK") 0.56f else 0.56f + (items.size % 3) * 0.08f
         )
         writeControls(items + control)
         renderControls(root)
         if (type == "JOYSTICK") {
             Toast.makeText(this, "Joystick adicionado com WASD.", Toast.LENGTH_SHORT).show()
+        } else if (mouseButtonKey != null) {
+            Toast.makeText(this, "Botão ${if (mouseButtonKey == "MOUSE_LEFT") "esquerdo" else "direito"} adicionado.", Toast.LENGTH_SHORT).show()
         } else {
             beginCapture(control.id)
         }
@@ -2855,7 +2890,16 @@ class FloatingBubbleService : Service() {
             Triple("MOUSE_PICK", "Seleção do Mouse", "⊙"),
             Triple("JOYSTICK", "Joystick", "✥"),
             Triple("MOUSE_LOOK", "Mouse FPS", "⌖"),
-            Triple("MOUSE_DRAG", "Arrasto Mouse", "↔")
+            Triple("MOUSE_DRAG", "Arrasto Mouse", "↔"),
+            Triple("MOUSE_LEFT_BUTTON", "Botão esquerdo", "◉"),
+            Triple("MOUSE_RIGHT_BUTTON", "Botão direito", "◉")
         )
+        val STORED_CONTROL_TYPES = setOf("TOUCH", "SWIPE", "MOUSE_PICK", "JOYSTICK", "MOUSE_LOOK", "MOUSE_DRAG")
+        const val EDITOR_MOUSE_LEFT_DOWN = -2
+        const val EDITOR_MOUSE_LEFT_UP = -3
+        const val EDITOR_MOUSE_RIGHT_DOWN = -4
+        const val EDITOR_MOUSE_RIGHT_UP = -5
+        const val EDITOR_MOUSE_MIDDLE_DOWN = -6
+        const val EDITOR_MOUSE_MIDDLE_UP = -7
     }
 }

@@ -1,6 +1,6 @@
 # B13 MAUSE PRO
 
-Versão de desenvolvimento: **0.7.3** (`versionCode 23`).
+Versão de desenvolvimento: **0.7.4** (`versionCode 24`).
 
 Primeira versão em desenvolvimento do B13 MAUSE PRO, um mapeador Android com launcher
 de jogos, editor de controles sobreposto e botão flutuante. A tela Iniciar jogo abre por
@@ -31,7 +31,9 @@ ajustados individualmente.
 A seta própria aparece quando o mouse é capturado (no modo CURSOR, inclusive ao abrir o editor).
 O modo inicial é configurável (padrão CURSOR); a tecla configurada (Alt esquerdo por padrão)
 alterna entre mira e cursor suspenso, preservando a posição da seta. Ajuste sensibilidades
-X/Y (0–100) e suavização (0–100) no marcador Mouse FPS.
+X/Y (0–100) e suavização (0–100) no marcador Mouse FPS. A resposta da sensibilidade
+agora é linear: 33% é aproximadamente o valor padrão, 0% para o movimento e 100% aplica
+três vezes a escala padrão.
 
 Mouse próprio: o app captura o mouse somente quando o keymap usa controles de mouse e o jogo
 está confirmado em primeiro plano. No modo cursor, o botão esquerdo toca na posição da seta;
@@ -40,6 +42,10 @@ posição. Um mapeamento explícito dos botões substitui o padrão. O cursor us
 própria de tela cheia e recebe posição por socket local; o conteúdo é atualizado uma vez por
 frame. A opacidade da janela permanece limitada para permitir toque-through em Android 12+.
 A tecla de Mouse FPS alterna MIRA/CURSOR sem recentralizar a posição do cursor.
+
+No editor, **Adicionar → Botão esquerdo/direito** cria diretamente controles associados
+aos respectivos botões do mouse. Também é possível selecionar um controle e capturar um
+botão físico; o serviço encaminha os eventos ao editor pelo socket local.
 
 A roda vertical/horizontal é injetada no jogo quando não tiver ação mapeada, e pode ser capturada
 no editor para disparar um controle. A tecla de emergência é configurável (padrão F12) e libera
@@ -61,6 +67,16 @@ iniciá-lo manualmente em **Actions** no GitHub. Quando a execução terminar, b
 `nexoplay-debug-apk` na seção **Artifacts** da execução.
 
 O APK desta versão é de depuração e não está assinado para distribuição na Play Store.
+
+## Novidades da 0.7.4
+
+- Adicionados controles prontos para os botões esquerdo e direito do mouse e corrigido o
+  encaminhamento de down/up ao editor para capturar esses botões sem depender de eventos nativos
+  do overlay. Um mapeamento do botão esquerdo agora substitui o clique padrão do cursor.
+- Sensibilidade da câmera voltou a uma escala linear consistente: 33% equivale aproximadamente
+  ao valor padrão, 0% para o movimento e 100% equivale a 3×. X e Y continuam independentes.
+- Requer teste em aparelho para validar captura evdev, seleção/captura dos botões e resposta da
+  sensibilidade em diferentes jogos e dispositivos.
 
 ## Novidades da 0.7.3
 

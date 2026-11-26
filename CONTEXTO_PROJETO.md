@@ -35,7 +35,7 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
    atualizado no Binder sem reiniciar o motor, preservando a posição do cursor.
 6. O serviço devolve uma mensagem de status que o app mostra em Toast.
 
-## Visibilidade e mouse (desde 0.5.0; estado atual 0.7.3)
+## Visibilidade e mouse (desde 0.5.0; estado atual 0.7.4)
 - O serviço observa foco por `ITaskStackListener` refletido e mantém polling de fallback;
   o app consulta o estado a cada 250 ms quando o cursor está visível e 750 ms quando oculto.
   Só o estado confirmado como foreground mantém captura; estados desconhecidos liberam entradas.
@@ -67,11 +67,28 @@ Pacote `com.mapeador`, minSdk 24, compileSdk 35, build pelo GitHub Actions (`And
   e assinatura das APIs internas variam por Android/OEM; se o registro falhar, o diagnóstico
   informa o motivo e o polling continua. É necessário validar em aparelho.
 
+## Botões do mouse e sensibilidade (0.7.4)
+- O editor aceita eventos de botão esquerdo, direito e meio enviados pelo socket do cursor;
+  down/up são agregados por dispositivo de origem para evitar eventos duplicados em mouses com
+  vários nós evdev.
+- O seletor oferece controles pré-associados aos botões esquerdo/direito, gravados como controles
+  TOUCH com `key` `MOUSE_LEFT`/`MOUSE_RIGHT`, preservando o schema existente. Um mapeamento
+  explícito do botão esquerdo tem precedência sobre o clique padrão do cursor.
+- A sensibilidade do Mouse FPS usa resposta linear após converter formatos antigos: 0–100%
+  corresponde a 0–3×, portanto 33% equivale aproximadamente à escala padrão. X/Y seguem
+  independentes; não há curva não linear aplicada no motor.
+- Necessário testar em dispositivo: captura via EVIOCGRAB, seleção pelos botões ao editar e
+  movimento de câmera em jogos com valores baixos, médios e altos de sensibilidade.
+
 ## Tamanhos (FloatingBubbleService.kt, companion)
 `KEY_SIZE_DP = 40` (ajustável por controle entre 50% e 200%), `JOYSTICK_SIZE_DP = 88`
 (× raio ajustável entre 20% e 150%), `JOYSTICK_MIN_DP = 24`.
 
 ## Histórico
+- 0.7.4 — O editor encaminha os botões esquerdo/direito/meio pelo socket mesmo durante captura,
+  oferece adicionar diretamente botões esquerdo/direito e permite que mapeamentos explícitos
+  substituam o clique padrão do cursor. Sensibilidade de câmera corrigida para uma escala linear
+  previsível (33% ≈ escala padrão; 100% = 3×).
 - 0.7.3 — O cursor próprio aplica movimento ao receber cada `SYN_REPORT` em vez de aguardar
   o agendador de 4 ms da mira. A posição segue coalescida na fila e desenhada no máximo uma vez
   por frame; a verificação de captura evita reconstruir grupos de dispositivos por movimento.

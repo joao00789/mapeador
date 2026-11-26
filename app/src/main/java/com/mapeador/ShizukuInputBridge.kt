@@ -28,7 +28,6 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
-import kotlin.math.pow
 
 /** Small Binder bridge: the user service runs as Shizuku's shell/root identity. */
 object ShizukuInputBridge {
@@ -1595,10 +1594,7 @@ class ShizukuInputUserService : Binder() {
     }
 
     private fun cameraDelta(delta: Float, sensitivity: Float): Float {
-        val percent = (sensitivity / MAX_MOUSE_SENSITIVITY * 100f).coerceIn(0f, 100f)
-        if (percent == 0f) return 0f
-        val curve = (percent / 50f).toDouble().pow(1.5).toFloat()
-        return delta * curve * MOUSE_LOOK_CURVE_SCALE * MOUSE_LOOK_SCALE
+        return delta * sensitivity * MOUSE_LOOK_SCALE
     }
 
     private fun moveCursor(deltaX: Float, deltaY: Float) {
@@ -1909,14 +1905,28 @@ class ShizukuInputUserService : Binder() {
             return
         }
         if (editorMode) {
-            if (key == "MOUSE_LEFT" && capturedMouseInput) {
-                if (down) {
-                    editorMouseButtonDown = true
-                    publishEditorPointerEvent(MotionEvent.ACTION_DOWN, cursorX.toInt(), cursorY.toInt())
-                } else {
-                    editorMouseButtonDown = false
-                    publishEditorPointerEvent(MotionEvent.ACTION_UP, cursorX.toInt(), cursorY.toInt())
+            if (capturedMouseInput && key in EDITOR_MOUSE_BUTTONS) {
+                val isTransition = synchronized(lock) {
+                    if (down) {
+                        val sources = pressedKeySources.getOrPut(key) { HashSet() }
+                        sources.add(sourcePath) && sources.size == 1
+                    } else {
+                        val sources = pressedKeySources[key] ?: return@synchronized false
+                        if (!sources.remove(sourcePath)) false
+                        else if (sources.isEmpty()) {
+                            pressedKeySources.remove(key)
+                            true
+                        } else false
+                    }
                 }
+                if (!isTransition) return
+                if (key == "MOUSE_LEFT") editorMouseButtonDown = down
+                val action = when (key) {
+                    "MOUSE_LEFT" -> if (down) EDITOR_MOUSE_LEFT_DOWN else EDITOR_MOUSE_LEFT_UP
+                    "MOUSE_RIGHT" -> if (down) EDITOR_MOUSE_RIGHT_DOWN else EDITOR_MOUSE_RIGHT_UP
+                    else -> if (down) EDITOR_MOUSE_MIDDLE_DOWN else EDITOR_MOUSE_MIDDLE_UP
+                }
+                publishEditorPointerEvent(action, cursorX.toInt(), cursorY.toInt())
             }
             return
         }
@@ -1973,7 +1983,9 @@ class ShizukuInputUserService : Binder() {
         }
         val mouseLookShortcut = bindings[key].orEmpty().any { it.control.type == "MOUSE_LOOK" }
         val mouseDragShortcut = bindings[key].orEmpty().any { it.control.type == "MOUSE_DRAG" }
-        if (key == "MOUSE_LEFT" && !mouseLookActive && !mouseLookShortcut && !mouseDragShortcut) {
+        if (key == "MOUSE_LEFT" && !mouseLookActive && !mouseLookShortcut &&
+            !mouseDragShortcut && bindings[key].isNullOrEmpty()
+        ) {
             synchronized(lock) {
                 val touch = injector ?: return
                 if (down) {
@@ -2281,7 +2293,6 @@ class ShizukuInputUserService : Binder() {
         const val MAX_LOOK_SMOOTHING_TAU_MS = 8f
         const val LOOK_SMOOTHING_RESET_MS = 80L
         const val MAX_MOUSE_SENSITIVITY = 3f
-        const val MOUSE_LOOK_CURVE_SCALE = 0.45f
         const val CAMERA_REGION_FRACTION = 0.35f
         const val MIN_CAMERA_REGION_PX = 64f
         const val LOOK_DELTA_EPSILON = 0.001f
@@ -2296,6 +2307,13 @@ class ShizukuInputUserService : Binder() {
         const val DEFAULT_JOYSTICK_RANGE = 120f
         const val JOYSTICK_RELEASE_GRACE_MS = 80L
         const val FOREGROUND_FAST_POLL_MS = 3500L
+        const val EDITOR_MOUSE_LEFT_DOWN = -2
+        const val EDITOR_MOUSE_LEFT_UP = -3
+        const val EDITOR_MOUSE_RIGHT_DOWN = -4
+        const val EDITOR_MOUSE_RIGHT_UP = -5
+        const val EDITOR_MOUSE_MIDDLE_DOWN = -6
+        const val EDITOR_MOUSE_MIDDLE_UP = -7
+        val EDITOR_MOUSE_BUTTONS = setOf("MOUSE_LEFT", "MOUSE_RIGHT", "MOUSE_MIDDLE")
         val SUPPORTED_TYPES = setOf("TOUCH", "SWIPE", "MOUSE_PICK", "JOYSTICK", "MOUSE_LOOK", "MOUSE_DRAG")
 
         /**
