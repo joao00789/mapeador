@@ -12,14 +12,18 @@ constexpr int ACTION_DOWN = 0;
 constexpr int ACTION_UP = 1;
 constexpr int ACTION_MOVE = 2;
 constexpr int ACTION_CANCEL = 3;
+constexpr int ACTION_HOVER_MOVE = 7;
 constexpr int ACTION_SCROLL = 8;
 constexpr int TOOL_TYPE_FINGER = 1;
 constexpr int TOOL_TYPE_MOUSE = 3;
 constexpr int AXIS_VSCROLL = 9;
 constexpr int AXIS_HSCROLL = 10;
+constexpr int AXIS_RELATIVE_X = 27;
+constexpr int AXIS_RELATIVE_Y = 28;
 constexpr int SOURCE_KEYBOARD = 0x00000101;
 constexpr int SOURCE_TOUCHSCREEN = 0x00001002;
 constexpr int SOURCE_MOUSE = 0x00002002;
+constexpr int SOURCE_MOUSE_RELATIVE = 0x00020004;
 
 JavaVM *gJavaVm = nullptr;
 
@@ -329,24 +333,30 @@ bool tryServiceManagerPath(JNIEnv *env) {
 
 jobject buildMotionEvent(JNIEnv *env, int64_t downTimeMs, int64_t eventTimeMs, int action,
                          int pointerCount, const int *ids, const float *xs, const float *ys,
-                         int source, bool scroll, float vertical, float horizontal) {
+                         int source, bool scroll, float vertical, float horizontal,
+                         float relativeX = 0.0f, float relativeY = 0.0f) {
     jobjectArray properties = env->NewObjectArray(pointerCount, gPointerPropertiesClass, nullptr);
     jobjectArray coords = env->NewObjectArray(pointerCount, gPointerCoordsClass, nullptr);
     for (int i = 0; i < pointerCount; i++) {
         jobject prop = env->NewObject(gPointerPropertiesClass, gPointerPropertiesCtor);
         env->SetIntField(prop, gIdField, ids[i]);
-        env->SetIntField(prop, gToolTypeField, scroll ? TOOL_TYPE_MOUSE : TOOL_TYPE_FINGER);
+        const bool mouseEvent = scroll || source == SOURCE_MOUSE || source == SOURCE_MOUSE_RELATIVE;
+        env->SetIntField(prop, gToolTypeField, mouseEvent ? TOOL_TYPE_MOUSE : TOOL_TYPE_FINGER);
         env->SetObjectArrayElement(properties, i, prop);
         env->DeleteLocalRef(prop);
 
         jobject coord = env->NewObject(gPointerCoordsClass, gPointerCoordsCtor);
         env->SetFloatField(coord, gXField, xs[i]);
         env->SetFloatField(coord, gYField, ys[i]);
-        env->SetFloatField(coord, gPressureField, scroll ? 0.0f : 1.0f);
-        env->SetFloatField(coord, gSizeField, scroll ? 0.0f : 1.0f);
+        env->SetFloatField(coord, gPressureField, mouseEvent ? 0.0f : 1.0f);
+        env->SetFloatField(coord, gSizeField, mouseEvent ? 0.0f : 1.0f);
         if (scroll) {
             env->CallVoidMethod(coord, gSetAxisValueMethod, AXIS_VSCROLL, vertical);
             env->CallVoidMethod(coord, gSetAxisValueMethod, AXIS_HSCROLL, horizontal);
+        }
+        if (source == SOURCE_MOUSE_RELATIVE) {
+            env->CallVoidMethod(coord, gSetAxisValueMethod, AXIS_RELATIVE_X, relativeX);
+            env->CallVoidMethod(coord, gSetAxisValueMethod, AXIS_RELATIVE_Y, relativeY);
         }
         env->SetObjectArrayElement(coords, i, coord);
         env->DeleteLocalRef(coord);
@@ -433,6 +443,29 @@ bool androidApiInjectScroll(JNIEnv *env, int64_t eventTimeMs, float vertical, fl
     int id = 0;
     jobject event = buildMotionEvent(env, eventTimeMs, eventTimeMs, ACTION_SCROLL, 1, &id, &x, &y,
         SOURCE_MOUSE, true, vertical, horizontal);
+    if (!event) return false;
+    bool ok = invokeInject(env, event);
+    env->DeleteLocalRef(event);
+    return ok;
+}
+
+bool androidApiInjectRelativeMouse(JNIEnv *env, int64_t eventTimeMs, float x, float y,
+                                   float deltaX, float deltaY) {
+    if (!gBasicsReady || !gInjectMethod) return false;
+    int id = 0;
+    jobject event = buildMotionEvent(env, eventTimeMs, eventTimeMs, ACTION_HOVER_MOVE, 1,
+        &id, &x, &y, SOURCE_MOUSE_RELATIVE, false, 0, 0, deltaX, deltaY);
+    if (!event) return false;
+    bool ok = invokeInject(env, event);
+    env->DeleteLocalRef(event);
+    return ok;
+}
+
+bool androidApiMoveMouseCursor(JNIEnv *env, int64_t eventTimeMs, float x, float y) {
+    if (!gBasicsReady || !gInjectMethod) return false;
+    int id = 0;
+    jobject event = buildMotionEvent(env, eventTimeMs, eventTimeMs, ACTION_HOVER_MOVE, 1,
+        &id, &x, &y, SOURCE_MOUSE, false, 0, 0);
     if (!event) return false;
     bool ok = invokeInject(env, event);
     env->DeleteLocalRef(event);

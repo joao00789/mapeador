@@ -99,3 +99,7 @@ No lado Kotlin:
   Kotlin/Compose simplificada. Ainda não testada em aparelho.
 - **V1 em andamento**: biblioteca e perfis locais em Room, preferências em
   DataStore, migração dos dados antigos e diagnóstico passivo de mouse.
+- **Correção de sessão/mouse**: overlay flutuante limitado ao app de jogo em
+  primeiro plano; captura exclusiva liberada quando suspensa ou fora da sessão;
+  movimento de gameplay encaminhado como eventos relativos, sem ciclo repetido
+  de toques para mover a câmera. Precisa validação em Android real/jogo alvo.

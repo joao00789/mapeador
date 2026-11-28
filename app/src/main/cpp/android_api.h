@@ -36,6 +36,13 @@ bool androidApiInjectTouch(JNIEnv *env, int64_t downTimeMs, int64_t eventTimeMs,
 bool androidApiInjectScroll(JNIEnv *env, int64_t eventTimeMs, float vertical, float horizontal,
                             float x, float y);
 
+// Injects a relative mouse movement (not a touchscreen drag), so movement is
+// not constrained by screen edges and does not synthesize tap-like releases.
+bool androidApiInjectRelativeMouse(JNIEnv *env, int64_t eventTimeMs, float x, float y,
+                                   float deltaX, float deltaY);
+
+bool androidApiMoveMouseCursor(JNIEnv *env, int64_t eventTimeMs, float x, float y);
+
 bool androidApiInjectKey(JNIEnv *env, int64_t downTimeMs, int64_t eventTimeMs, bool down,
                          int androidKeyCode, int repeat, int flags);
 

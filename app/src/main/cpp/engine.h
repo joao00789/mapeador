@@ -84,12 +84,7 @@ private:
     bool mouseAimMode_ = false;
     float cursorX_ = 0.5f;
     float cursorY_ = 0.5f;
-    int cursorFinger_ = -1;
-    int cursorRightFinger_ = -1;
-    int cameraFinger_ = -1;
-    float cameraAnchorX_ = 0, cameraAnchorY_ = 0;
-    float cameraOffsetX_ = 0, cameraOffsetY_ = 0;
-    float smoothedDx_ = 0, smoothedDy_ = 0;
+    bool mouseGrabActive_ = false;
 
     int relativeX_ = 0, relativeY_ = 0;
     int wheelVertical_ = 0, wheelHorizontal_ = 0;
@@ -140,6 +135,8 @@ private:
     void moveJoystick(int controlIndex, int direction, bool down);
     void pressMouseDrag(int controlIndex);
     void toggleMouseMode();
+    void setMouseCapture(bool captured);
+    void resetMouseMotion();
 
     float pixelX(const Control &c) const;
     float pixelY(const Control &c) const;

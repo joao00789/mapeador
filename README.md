@@ -59,6 +59,14 @@ não observa eventos enquanto a atividade está em segundo plano.
 - O diagnóstico passivo mostra somente eventos entregues pelo Android à
   atividade; ele não representa os eventos capturados diretamente pelo motor
   Shizuku durante uma sessão de jogo.
+
+  Durante uma sessão, a bolha e os indicadores só aparecem quando o app escolhido
+  está em primeiro plano. Com o mouse suspenso ou fora do jogo, a captura
+  exclusiva é liberada para o Android; teclas físicas de mouse não acionam
+  controles mapeados nesse modo. Ao capturar para gameplay, o motor encaminha
+  movimento relativo com sensibilidade linear, sem simular toques repetidos para
+  mover a câmera. O comportamento de eventos relativos depende da compatibilidade
+  de cada jogo Android e precisa ser confirmado em aparelho real.
 - O editor de keymap ainda usa a implementação existente de overlay e motor;
   esta atualização não declara a injeção funcional em jogos.
   Suporta os tipos: Toque, Deslizar, Mouse Pick, Joystick (WASD/Setas),

@@ -24,8 +24,6 @@ constexpr float MAX_MOUSE_SENSITIVITY = 3.0f;
 constexpr auto MOUSE_MOVE_BATCH_INTERVAL = std::chrono::milliseconds(2);
 constexpr float DEFAULT_JOYSTICK_RANGE_PX = 120.0f;
 constexpr int JOYSTICK_RELEASE_GRACE_MS = 80;
-constexpr float CAMERA_REGION_FRACTION = 0.35f;
-constexpr float MIN_CAMERA_REGION_PX = 64.0f;
 
 enum Direction { DIR_UP = 0, DIR_DOWN = 1, DIR_LEFT = 2, DIR_RIGHT = 3 };
 
@@ -93,6 +91,10 @@ void Engine::updateKeymap(const std::string &keymapJson) {
     keymap_ = Keymap::fromJsonString(keymapJson);
     mouseAimMode_ = keymap_.initialMouseMode == 1;
     rebuildBindings();
+    resetMouseMotion();
+    cursorX_ = screenWidth_ / 2.0f;
+    cursorY_ = screenHeight_ / 2.0f;
+    setMouseCapture(mouseAimMode_);
 }
 
 void Engine::start(const std::string &packageName, int screenWidthPx, int screenHeightPx) {
@@ -101,6 +103,8 @@ void Engine::start(const std::string &packageName, int screenWidthPx, int screen
     packageName_ = packageName;
     screenWidth_ = screenWidthPx > 0 ? screenWidthPx : 1920;
     screenHeight_ = screenHeightPx > 0 ? screenHeightPx : 1080;
+    foreground_ = false;
+    paused_ = false;
     cursorX_ = screenWidth_ / 2.0f;
     cursorY_ = screenHeight_ / 2.0f;
 
@@ -111,9 +115,8 @@ void Engine::start(const std::string &packageName, int screenWidthPx, int screen
         : ("Injecao de toques pronta: " + injectionPathDescription_).c_str());
 
     evdev_.rescan();
-    int grabbedMouse = evdev_.setMouseGrabbed(true);
-    androidApiLogInfo(TAG, ("Mouse capturado com exclusividade em " + std::to_string(grabbedMouse) +
-        " nó(s); dispositivos encontrados: " + std::to_string(evdev_.deviceCount())).c_str());
+    evdev_.setMouseGrabbed(false);
+    mouseGrabActive_ = false;
     running_ = true;
     pendingMouseDeltaX_ = 0;
     pendingMouseDeltaY_ = 0;
@@ -131,13 +134,17 @@ void Engine::start(const std::string &packageName, int screenWidthPx, int screen
 void Engine::stop() {
     if (!running_) return;
     running_ = false;
+    {
+        std::lock_guard<std::mutex> lock(lock_);
+        setMouseCapture(false);
+        releaseAllFingers();
+    }
     focusRunning_ = false;
     mouseMotionRunning_ = false;
     mouseMotionCv_.notify_all();
     if (mouseMotionThread_.joinable()) mouseMotionThread_.join();
     if (focusThread_.joinable()) focusThread_.join();
     evdev_.stop();
-    releaseAllFingers();
     androidApiDetachCurrentThread();
 }
 
@@ -145,17 +152,53 @@ JNIEnv *Engine::currentEnv() { return androidApiAttachCurrentThread("MapeadorEng
 
 void Engine::setForeground(bool foreground) {
     bool was = foreground_.exchange(foreground);
-    if (was && !foreground) {
+    if (was != foreground) {
         std::lock_guard<std::mutex> lock(lock_);
-        releaseAllFingers();
+        resetMouseMotion();
+        cursorX_ = screenWidth_ / 2.0f;
+        cursorY_ = screenHeight_ / 2.0f;
+        setMouseCapture(foreground && mouseAimMode_ && !paused_);
+        if (!foreground) {
+            releaseAllFingers();
+            JNIEnv *env = currentEnv();
+            if (env) {
+                androidApiMoveMouseCursor(
+                    env,
+                    androidApiUptimeMillis(env),
+                    cursorX_,
+                    cursorY_);
+            }
+        }
     }
+}
+
+void Engine::setMouseCapture(bool captured) {
+    const bool shouldGrab = captured && running_ && foreground_ && !paused_;
+    const int nodes = evdev_.setMouseGrabbed(shouldGrab);
+    mouseGrabActive_ = shouldGrab && nodes > 0;
+    androidApiLogInfo(TAG, mouseGrabActive_
+        ? ("Mouse capturado: " + std::to_string(nodes) + " nó(s)").c_str()
+        : "Mouse livre para o Android");
+}
+
+void Engine::resetMouseMotion() {
+    pendingMouseDeltaX_ = 0;
+    pendingMouseDeltaY_ = 0;
+    lastMouseMotionAt_ = {};
+    relativeX_ = 0;
+    relativeY_ = 0;
+    wheelVertical_ = 0;
+    wheelHorizontal_ = 0;
+    wheelVerticalHiRes_ = 0;
+    wheelHorizontalHiRes_ = 0;
 }
 
 void Engine::setEditorMode(bool editorMode) {
     bool was = editorMode_.exchange(editorMode);
-    if (!was && editorMode) {
+    if (was != editorMode) {
         std::lock_guard<std::mutex> lock(lock_);
-        releaseAllFingers();
+        if (editorMode) releaseAllFingers();
+        setMouseCapture(!editorMode && mouseAimMode_);
     }
 }
 
@@ -186,6 +229,7 @@ std::string Engine::diagnostics() {
     root.set("foreground", json::Value::fromBool(foreground_));
     root.set("editorMode", json::Value::fromBool(editorMode_));
     root.set("paused", json::Value::fromBool(paused_));
+    root.set("mouseCaptured", json::Value::fromBool(mouseGrabActive_));
     root.set("deviceCount", json::Value::fromNumber(evdev_.deviceCount()));
     root.set("injectionPath", json::Value::fromString(injectionPathDescription_));
     root.set("injectionAvailable", json::Value::fromBool(androidApiInjectionAvailable()));
@@ -248,9 +292,6 @@ void Engine::fingerUp(int id) {
 
 void Engine::releaseAllFingers() {
     while (!fingers_.empty()) fingerUp(fingers_.back().id);
-    cursorFinger_ = -1;
-    cursorRightFinger_ = -1;
-    cameraFinger_ = -1;
     for (auto &r : runtime_) { r.finger = -1; r.held.clear(); }
 }
 
@@ -366,7 +407,21 @@ void Engine::pressMouseDrag(int controlIndex) {
 
 void Engine::toggleMouseMode() {
     mouseAimMode_ = !mouseAimMode_;
-    if (!mouseAimMode_ && cameraFinger_ >= 0) { fingerUp(cameraFinger_); cameraFinger_ = -1; }
+    releaseAllFingers();
+    resetMouseMotion();
+    cursorX_ = screenWidth_ / 2.0f;
+    cursorY_ = screenHeight_ / 2.0f;
+    setMouseCapture(mouseAimMode_);
+    if (!mouseAimMode_ && foreground_) {
+        JNIEnv *env = currentEnv();
+        if (env) {
+            androidApiMoveMouseCursor(
+                env,
+                androidApiUptimeMillis(env),
+                cursorX_,
+                cursorY_);
+        }
+    }
 }
 
 void Engine::performBinding(int controlIndex, int direction, bool down) {
@@ -433,7 +488,23 @@ void Engine::onKey(const std::string &name, bool down) {
         if (down) {
             bool nowPaused = !paused_.load();
             paused_.store(nowPaused);
-            if (nowPaused) releaseAllFingers();
+            resetMouseMotion();
+            if (nowPaused) {
+                releaseAllFingers();
+                setMouseCapture(false);
+                cursorX_ = screenWidth_ / 2.0f;
+                cursorY_ = screenHeight_ / 2.0f;
+                JNIEnv *env = currentEnv();
+                if (env) {
+                    androidApiMoveMouseCursor(
+                        env,
+                        androidApiUptimeMillis(env),
+                        cursorX_,
+                        cursorY_);
+                }
+            } else {
+                setMouseCapture(mouseAimMode_);
+            }
         }
         return;
     }
@@ -448,59 +519,20 @@ void Engine::onKey(const std::string &name, bool down) {
 
     // Find bindings for this key.
     std::vector<std::pair<int, int>> matches;
-    bool isMouseLookShortcut = false, isMouseDragShortcut = false;
     for (auto &entry : bindings_) {
         if (entry.first != name) continue;
         matches = entry.second;
-        for (auto &m : matches) {
-            ControlType t = keymap_.controls[m.first].type;
-            if (t == ControlType::MouseLook) isMouseLookShortcut = true;
-            if (t == ControlType::MouseDrag) isMouseDragShortcut = true;
-        }
         break;
     }
 
     bool isMouseName = name.rfind("MOUSE_", 0) == 0;
+    if (isMouseName && (!mouseAimMode_ || !mouseGrabActive_ || !foreground_ ||
+                        paused_ || editorMode_)) {
+        return;
+    }
+
     if (isMouseName && matches.empty()) {
-        if (name == "MOUSE_LEFT" && !mouseAimMode_ && !isMouseLookShortcut && !isMouseDragShortcut) {
-            if (down) { if (cursorFinger_ < 0) cursorFinger_ = fingerDown(cursorX_, cursorY_); }
-            else if (cursorFinger_ >= 0) { fingerUp(cursorFinger_); cursorFinger_ = -1; }
-            return;
-        }
-        if (name == "MOUSE_RIGHT" && !mouseAimMode_) {
-            if (down) {
-                JNIEnv *env = currentEnv();
-                if (env) {
-                    int backCode = androidApiKeyCodeFromName(env, "BACK");
-                    int64_t now = androidApiUptimeMillis(env);
-                    androidApiInjectKey(env, now, now, true, backCode, 0, 0);
-                }
-                std::thread([this]() {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(40));
-                    std::lock_guard<std::mutex> lock(lock_);
-                    JNIEnv *env = currentEnv();
-                    if (env) {
-                        int backCode = androidApiKeyCodeFromName(env, "BACK");
-                        int64_t now = androidApiUptimeMillis(env);
-                        androidApiInjectKey(env, now, now, false, backCode, 0, 0);
-                    }
-                }).detach();
-            }
-            return;
-        }
-        if (name == "MOUSE_MIDDLE" && !mouseAimMode_) {
-            if (down) {
-                int id = fingerDown(cursorX_, cursorY_);
-                if (id >= 0) {
-                    std::thread([this, id]() {
-                        std::this_thread::sleep_for(std::chrono::milliseconds(35));
-                        std::lock_guard<std::mutex> lock(lock_);
-                        fingerUp(id);
-                    }).detach();
-                }
-            }
-            return;
-        }
+        return;
     }
 
     if (matches.empty()) {
@@ -573,49 +605,26 @@ void Engine::mouseMotionLoop() {
 void Engine::processMouseMove(int dx, int dy) {
     if (dx == 0 && dy == 0) return;
     if (mouseAimMode_) {
-        if (foreground_.load() && !editorMode_.load() && !paused_.load()) {
-            // Find the active MOUSE_LOOK control (first one found) for sensitivity.
+        if (foreground_.load() && !editorMode_.load() && !paused_.load() && mouseGrabActive_) {
             float sensX = 50, sensY = 50;
-            int smoothing = 35;
             for (size_t i = 0; i < keymap_.controls.size(); i++) {
                 if (keymap_.controls[i].type == ControlType::MouseLook) {
                     sensX = keymap_.controls[i].sensitivityX;
                     sensY = keymap_.controls[i].sensitivityY;
-                    smoothing = keymap_.controls[i].smoothing;
-                    cameraAnchorX_ = pixelX(keymap_.controls[i]);
-                    cameraAnchorY_ = pixelY(keymap_.controls[i]);
                     break;
                 }
             }
             float scaleX = (sensX / 100.0f) * MAX_MOUSE_SENSITIVITY;
             float scaleY = (sensY / 100.0f) * MAX_MOUSE_SENSITIVITY;
-            float rawDx = dx * scaleX;
-            float rawDy = dy * scaleY;
-            float smoothFactor = clampf(smoothing / 100.0f, 0.0f, 0.95f);
-            smoothedDx_ += (rawDx - smoothedDx_) * (1.0f - smoothFactor);
-            smoothedDy_ += (rawDy - smoothedDy_) * (1.0f - smoothFactor);
-
-            if (cameraAnchorX_ == 0 && cameraAnchorY_ == 0) {
-                cameraAnchorX_ = screenWidth_ / 2.0f;
-                cameraAnchorY_ = screenHeight_ / 2.0f;
-            }
-            float regionRadius = std::max(MIN_CAMERA_REGION_PX,
-                std::min(screenWidth_, screenHeight_) * CAMERA_REGION_FRACTION);
-            cameraOffsetX_ += smoothedDx_;
-            cameraOffsetY_ += smoothedDy_;
-            bool recenter = std::sqrt(cameraOffsetX_ * cameraOffsetX_ + cameraOffsetY_ * cameraOffsetY_) > regionRadius;
-            if (cameraFinger_ < 0) {
-                cameraFinger_ = fingerDown(cameraAnchorX_, cameraAnchorY_);
-                cameraOffsetX_ = 0;
-                cameraOffsetY_ = 0;
-            } else if (recenter) {
-                fingerUp(cameraFinger_);
-                cameraOffsetX_ = 0;
-                cameraOffsetY_ = 0;
-                cameraFinger_ = fingerDown(cameraAnchorX_, cameraAnchorY_);
-            } else {
-                fingerMove(cameraFinger_, clampf(cameraAnchorX_ + cameraOffsetX_, 0.0f, screenWidth_ - 1.0f),
-                           clampf(cameraAnchorY_ + cameraOffsetY_, 0.0f, screenHeight_ - 1.0f));
+            JNIEnv *env = currentEnv();
+            if (env && !androidApiInjectRelativeMouse(
+                    env,
+                    androidApiUptimeMillis(env),
+                    screenWidth_ / 2.0f,
+                    screenHeight_ / 2.0f,
+                    dx * scaleX,
+                    dy * scaleY)) {
+                lastInjectionError_ = "Falha ao encaminhar movimento relativo do mouse";
             }
         }
     } else {
@@ -625,8 +634,15 @@ void Engine::processMouseMove(int dx, int dy) {
         }
         cursorX_ = clampf(cursorX_ + dx * cursorSpeed, 0.0f, screenWidth_ - 1.0f);
         cursorY_ = clampf(cursorY_ + dy * cursorSpeed, 0.0f, screenHeight_ - 1.0f);
-        if (cursorFinger_ >= 0) fingerMove(cursorFinger_, cursorX_, cursorY_);
     }
+
+    // The editor keeps a bounded on-screen pointer while the mouse is free.
+    if (editorMode_ && foreground_ && mouseAimMode_) {
+        cursorX_ = clampf(cursorX_ + dx, 0.0f, screenWidth_ - 1.0f);
+        cursorY_ = clampf(cursorY_ + dy, 0.0f, screenHeight_ - 1.0f);
+    }
+
+    if (!mouseGrabActive_ || !foreground_ || paused_ || editorMode_) return;
 
     // MOUSE_DRAG controls follow the raw delta while their key is held.
     for (size_t i = 0; i < keymap_.controls.size(); i++) {
@@ -643,7 +659,8 @@ void Engine::processMouseMove(int dx, int dy) {
 }
 
 void Engine::onMouseScroll(float vertical, float horizontal) {
-    if (!foreground_.load() || editorMode_.load() || paused_.load()) return;
+    if (!foreground_.load() || editorMode_.load() || paused_.load() ||
+        !mouseAimMode_ || !mouseGrabActive_) return;
     JNIEnv *env = currentEnv();
     if (!env) return;
     androidApiInjectScroll(env, androidApiUptimeMillis(env), vertical, horizontal, cursorX_, cursorY_);
