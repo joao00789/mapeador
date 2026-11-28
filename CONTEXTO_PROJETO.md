@@ -80,8 +80,15 @@ No lado Kotlin:
 2. Captura de tecla física no editor (hoje é uma lista fixa de teclas).
 3. Importar/exportar keymap como arquivo `.json` de verdade (hoje é só
    compartilhar/colar texto).
-4. Keymap por jogo (hoje é um único keymap global, como na versão anterior).
-5. Indicadores visuais mais ricos no editor (hoje são círculos simples).
+4. Concluir o fluxo de perfis: o armazenamento agora separa apps, perfis e
+   controles em Room; o perfil padrão de cada app é carregado pelo serviço.
+   Ainda falta editar/duplicar perfis pela tela Mapas.
+5. Migrar os mapas globais antigos para o app correto quando houver mais de um
+   app salvo. A migração os preserva e oferece importação manual, sem atribuir
+   silenciosamente um mapa a vários apps.
+6. Indicadores visuais mais ricos no editor (hoje são círculos simples).
+7. Testar diagnóstico de mouse e movimento em aparelhos Android reais; o
+   diagnóstico atual observa passivamente eventos entregues à Activity.
 
 ## Histórico
 
@@ -90,3 +97,5 @@ No lado Kotlin:
   usuário — motivou esta reescrita completa.
 - **1.0.0 (este commit)**: reescrita do motor em C++ nativo (JNI), UI
   Kotlin/Compose simplificada. Ainda não testada em aparelho.
+- **V1 em andamento**: biblioteca e perfis locais em Room, preferências em
+  DataStore, migração dos dados antigos e diagnóstico passivo de mouse.

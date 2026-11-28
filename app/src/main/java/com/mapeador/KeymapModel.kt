@@ -136,5 +136,33 @@ data class Keymap(
                 keymap
             }
         }
+
+        fun fromJsonStringStrict(text: String?): Keymap {
+            if (text.isNullOrBlank()) return Keymap()
+            val root = try {
+                JSONObject(text)
+            } catch (_: JSONException) {
+                null
+            }
+            val array = if (root == null) {
+                JSONArray(text)
+            } else {
+                root.optJSONArray("controls")
+                    ?: throw JSONException("O mapa não contém uma lista de controles.")
+            }
+            val keymap = Keymap(
+                emergencyKey = root?.optString("emergencyKey", "F12") ?: "F12",
+                captureKeyboard = root?.optBoolean("captureKeyboard", false) ?: false,
+                initialMouseMode = root?.optInt("initialMouseMode", 0) ?: 0,
+            )
+            for (index in 0 until array.length()) {
+                val item = array.optJSONObject(index)
+                    ?: throw JSONException("O controle na posição $index não é um objeto.")
+                val control = Control.fromJson(item)
+                    ?: throw JSONException("O tipo de controle na posição $index não é reconhecido.")
+                keymap.controls += control
+            }
+            return keymap
+        }
     }
 }

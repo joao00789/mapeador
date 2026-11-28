@@ -57,8 +57,8 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationRail
-import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -90,29 +90,28 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.mapeador.data.repository.InstalledApp
+import com.mapeador.diagnostics.MouseDiagnosticsState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 
 private const val TAG = "B13MainActivity"
-private const val PREFS_NAME = "mapeador"
-private const val SAVED_GAMES_KEY = "saved_games"
 
 data class GameApp(
     val packageName: String,
     val label: String,
     val hasMapping: Boolean,
+    val isInstalled: Boolean = true,
 )
 
 private enum class Page(val label: String, val icon: ImageVector) {
-    GAMES("Jogos", Icons.Filled.Home),
+    LIBRARY("Biblioteca", Icons.Filled.Home),
+    MAPS("Mapas", Icons.Filled.Add),
+    MOUSE("Mouse", Icons.Filled.PlayArrow),
     SETTINGS("Config.", Icons.Filled.Settings),
-}
-
-private sealed interface CatalogResult {
-    data object Loading : CatalogResult
-    data class Loaded(val apps: List<GameApp>) : CatalogResult
-    data class Failed(val message: String) : CatalogResult
 }
 
 class MainActivity : ComponentActivity() {
@@ -125,13 +124,43 @@ class MainActivity : ComponentActivity() {
         }
         setContent { MapeadorApp() }
     }
+
+    override fun onStart() {
+        super.onStart()
+        (application as B13Application).mouseDiagnostics.start()
+    }
+
+    override fun onStop() {
+        (application as B13Application).mouseDiagnostics.stop()
+        super.onStop()
+    }
+
+    override fun dispatchGenericMotionEvent(event: android.view.MotionEvent): Boolean {
+        (application as B13Application).mouseDiagnostics.record(event)
+        return super.dispatchGenericMotionEvent(event)
+    }
+
+    override fun dispatchTouchEvent(event: android.view.MotionEvent): Boolean {
+        (application as B13Application).mouseDiagnostics.record(event)
+        return super.dispatchTouchEvent(event)
+    }
 }
 
 @androidx.compose.runtime.Composable
 private fun MapeadorApp() {
     val context = LocalContext.current
+    val application = context.applicationContext as B13Application
+    val viewModel: MainViewModel = viewModel(factory = MainViewModelFactory(application))
     val resumeRevision = rememberResumeRevision()
-    var pageName by rememberSaveable { mutableStateOf(Page.GAMES.name) }
+    val games by viewModel.games.collectAsStateWithLifecycle()
+    val startupState by viewModel.startupState.collectAsStateWithLifecycle()
+    val showIndicators by viewModel.showIndicators.collectAsStateWithLifecycle()
+    val selectedGamePackage by viewModel.selectedGamePackage.collectAsStateWithLifecycle()
+    val legacyKeymapBackup by viewModel.legacyKeymapBackup.collectAsStateWithLifecycle()
+    val mouseState by viewModel.mouseState.collectAsStateWithLifecycle()
+    val libraryError by viewModel.libraryError.collectAsStateWithLifecycle()
+    val appsState by viewModel.appsState.collectAsStateWithLifecycle()
+    var pageName by rememberSaveable { mutableStateOf(Page.LIBRARY.name) }
     val page = Page.valueOf(pageName)
     var shizukuReady by remember {
         mutableStateOf(
@@ -142,6 +171,7 @@ private fun MapeadorApp() {
     LaunchedEffect(resumeRevision) {
         shizukuReady = Shizuku.pingBinder() &&
             Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        viewModel.refreshLibrary()
     }
 
     DisposableEffect(Unit) {
@@ -154,39 +184,26 @@ private fun MapeadorApp() {
     }
 
     B13MaterialTheme {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(B13Theme.Background),
         ) {
-            NavigationRail(
-                modifier = Modifier.fillMaxHeight(),
-                containerColor = B13Theme.PanelDark,
-            ) {
-                Page.entries.forEach { item ->
-                    NavigationRailItem(
-                        selected = page == item,
-                        onClick = { pageName = item.name },
-                        icon = { Icon(item.icon, contentDescription = item.label) },
-                        label = { Text(item.label) },
-                    )
-                }
-            }
-
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
                     .windowInsetsPadding(
                         WindowInsets.safeDrawing.only(
-                            WindowInsetsSides.Vertical + WindowInsetsSides.End,
+                            WindowInsetsSides.Vertical + WindowInsetsSides.Horizontal,
                         ),
                     )
-                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(46.dp),
+                        .height(42.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
@@ -206,7 +223,7 @@ private fun MapeadorApp() {
                             fontWeight = FontWeight.Bold,
                         )
                         Text(
-                            if (page == Page.GAMES) "Biblioteca" else "Configurações",
+                            page.label,
                             color = B13Theme.Muted,
                             style = MaterialTheme.typography.labelSmall,
                         )
@@ -218,41 +235,106 @@ private fun MapeadorApp() {
                     )
                 }
 
-                Spacer(Modifier.height(10.dp))
-                when (page) {
-                    Page.GAMES -> GamesPage(context, shizukuReady, resumeRevision)
-                    Page.SETTINGS -> SettingsPage(context, shizukuReady, resumeRevision)
+                Spacer(Modifier.height(8.dp))
+                when (val startup = startupState) {
+                    StartupState.Loading -> LoadingCatalog()
+                    is StartupState.Failed -> B13EmptyState(
+                        title = "Não foi possível iniciar",
+                        message = startup.message,
+                        actionLabel = "Tentar novamente",
+                        onAction = viewModel::retryInitialization,
+                    )
+                    is StartupState.Ready -> {
+                        if (startup.warning != null) {
+                            Text(
+                                startup.warning,
+                                color = B13Theme.Error,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                        when (page) {
+                            Page.LIBRARY -> GamesPage(
+                                context = context,
+                                viewModel = viewModel,
+                                games = games,
+                                appsState = appsState,
+                                shizukuReady = shizukuReady,
+                            )
+                            Page.MAPS -> MapsPage(
+                                games = games,
+                                selectedGamePackage = selectedGamePackage,
+                                legacyKeymapBackup = legacyKeymapBackup,
+                                onSelect = viewModel::selectGame,
+                                onImportLegacy = viewModel::importLegacyKeymap,
+                            )
+                            Page.MOUSE -> MouseDiagnosticsPage(mouseState)
+                            Page.SETTINGS -> SettingsPage(
+                                context = context,
+                                shizukuReady = shizukuReady,
+                                resumeRevision = resumeRevision,
+                                indicators = showIndicators,
+                                onIndicatorsChange = viewModel::setShowIndicators,
+                                legacyKeymap = legacyKeymapBackup,
+                            )
+                        }
+                    }
                 }
             }
+
+            NavigationBar(
+                modifier = Modifier.height(58.dp),
+                containerColor = B13Theme.PanelDark,
+            ) {
+                Page.entries.forEach { item ->
+                    NavigationBarItem(
+                        selected = page == item,
+                        onClick = { pageName = item.name },
+                        icon = { Icon(item.icon, contentDescription = item.label) },
+                        label = { Text(item.label, maxLines = 1) },
+                    )
+                }
+            }
+        }
+
+        if (libraryError != null) {
+            AlertDialog(
+                onDismissRequest = viewModel::dismissLibraryError,
+                title = { Text("Não foi possível concluir") },
+                text = { Text(libraryError.orEmpty()) },
+                confirmButton = {
+                    TextButton(onClick = viewModel::dismissLibraryError) { Text("Entendi") }
+                },
+            )
         }
     }
 }
 
 @androidx.compose.runtime.Composable
-private fun GamesPage(context: Context, shizukuReady: Boolean, resumeRevision: Int) {
-    val appContext = remember(context) { context.applicationContext }
-    val prefs = remember(appContext) {
-        appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    }
-    var savedPackages by rememberSaveable {
-        mutableStateOf(prefs.getStringSet(SAVED_GAMES_KEY, emptySet()).orEmpty().toList())
-    }
+private fun GamesPage(
+    context: Context,
+    viewModel: MainViewModel,
+    games: List<LibraryGame>,
+    appsState: AppsLoadState,
+    shizukuReady: Boolean,
+) {
     var searchQuery by rememberSaveable { mutableStateOf("") }
     var showPicker by rememberSaveable { mutableStateOf(false) }
-    var catalogRevision by rememberSaveable { mutableIntStateOf(0) }
-    val catalog by produceState<CatalogResult>(
-        initialValue = CatalogResult.Loading,
-        savedPackages,
-        resumeRevision,
-        catalogRevision,
-    ) {
-        value = withContext(Dispatchers.IO) {
-            loadSavedGames(appContext, prefs, savedPackages)
+    val savedApps = remember(games) {
+        games.map { game ->
+            GameApp(
+                packageName = game.packageName,
+                label = game.label,
+                hasMapping = game.hasMapping,
+                isInstalled = game.isInstalled,
+            )
         }
     }
-    val games = (catalog as? CatalogResult.Loaded)?.apps.orEmpty()
+    LaunchedEffect(showPicker) {
+        if (showPicker) viewModel.loadInstalledApps()
+    }
+
     val filteredGames = remember(games, searchQuery) {
-        games.filter { game ->
+        savedApps.filter { game ->
             game.label.contains(searchQuery, ignoreCase = true) ||
                 game.packageName.contains(searchQuery, ignoreCase = true)
         }
@@ -297,32 +379,17 @@ private fun GamesPage(context: Context, shizukuReady: Boolean, resumeRevision: I
         )
 
         if (!shizukuReady) {
-            Card(
-                colors = CardDefaults.cardColors(containerColor = B13Theme.PanelDark),
-                shape = MaterialTheme.shapes.medium,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(
-                    "Autorize o Shizuku em Config. para ativar o mapeamento durante o jogo.",
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                    color = B13Theme.TextPrimary,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
+            Text(
+                "Shizuku ainda não autorizado. A biblioteca continua disponível.",
+                color = B13Theme.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
 
-        when (val result = catalog) {
-            CatalogResult.Loading -> LoadingCatalog()
-            is CatalogResult.Failed -> B13EmptyState(
-                title = "Não foi possível carregar a biblioteca",
-                message = result.message,
-                actionLabel = "Tentar novamente",
-                onAction = { catalogRevision += 1 },
-            )
-            is CatalogResult.Loaded -> when {
-                result.apps.isEmpty() -> B13EmptyState(
+        when {
+                savedApps.isEmpty() -> B13EmptyState(
                     title = "Sua biblioteca está vazia",
-                    message = "Adicione um app instalado para começar.",
+                    message = "Adicione um app instalado para criar o primeiro perfil.",
                     actionLabel = "Adicionar app",
                     onAction = { showPicker = true },
                 )
@@ -345,28 +412,25 @@ private fun GamesPage(context: Context, shizukuReady: Boolean, resumeRevision: I
                     ) { game ->
                         GameCard(
                             game = game,
-                            onLaunch = { launchGame(context, game.packageName) },
-                            onRemove = {
-                                savedPackages = savedPackages.filterNot { it == game.packageName }
-                                prefs.edit()
-                                    .putStringSet(SAVED_GAMES_KEY, savedPackages.toSet())
-                                    .apply()
+                            onLaunch = {
+                                viewModel.selectGame(game.packageName)
+                                launchGame(context, game.packageName)
                             },
+                            onRemove = { viewModel.removeGame(game.packageName) },
                         )
                     }
                 }
-            }
         }
     }
 
     if (showPicker) {
         GamePickerDialog(
-            context = appContext,
-            savedPackages = savedPackages,
+            appsState = appsState,
+            savedPackages = savedApps.map(GameApp::packageName).toSet(),
             onDismiss = { showPicker = false },
-            onPick = { packageName ->
-                savedPackages = (savedPackages + packageName).distinct()
-                prefs.edit().putStringSet(SAVED_GAMES_KEY, savedPackages.toSet()).apply()
+            onRetry = viewModel::loadInstalledApps,
+            onPick = { app ->
+                viewModel.addGame(app)
                 showPicker = false
             },
         )
@@ -381,6 +445,7 @@ private fun GameCard(
 ) {
     Card(
         onClick = onLaunch,
+        enabled = game.isInstalled,
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 142.dp),
@@ -428,14 +493,22 @@ private fun GameCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 B13StatusIndicator(
-                    label = if (game.hasMapping) "Mapa atual salvo" else "Sem mapa salvo",
-                    color = if (game.hasMapping) B13Theme.Success else B13Theme.Muted,
+                    label = when {
+                        !game.isInstalled -> "App não instalado"
+                        game.hasMapping -> "Mapa salvo"
+                        else -> "Sem mapa salvo"
+                    },
+                    color = if (game.isInstalled && game.hasMapping) {
+                        B13Theme.Success
+                    } else {
+                        B13Theme.Muted
+                    },
                 )
                 Spacer(Modifier.weight(1f))
-                FilledTonalButton(onClick = onLaunch) {
+                FilledTonalButton(onClick = onLaunch, enabled = game.isInstalled) {
                     Icon(Icons.Filled.PlayArrow, contentDescription = null)
                     Spacer(Modifier.width(4.dp))
-                    Text("Iniciar")
+                    Text(if (game.isInstalled) "Iniciar" else "Indisponível")
                 }
             }
         }
@@ -444,23 +517,15 @@ private fun GameCard(
 
 @androidx.compose.runtime.Composable
 private fun GamePickerDialog(
-    context: Context,
-    savedPackages: List<String>,
+    appsState: AppsLoadState,
+    savedPackages: Set<String>,
     onDismiss: () -> Unit,
-    onPick: (String) -> Unit,
+    onRetry: () -> Unit,
+    onPick: (InstalledApp) -> Unit,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    var retryToken by rememberSaveable { mutableIntStateOf(0) }
-    val catalog by produceState<CatalogResult>(
-        initialValue = CatalogResult.Loading,
-        savedPackages,
-        retryToken,
-    ) {
-        value = withContext(Dispatchers.IO) {
-            loadInstalledApps(context, savedPackages.toSet())
-        }
-    }
-    val apps = (catalog as? CatalogResult.Loaded)?.apps.orEmpty()
+    val apps = (appsState as? AppsLoadState.Loaded)?.apps.orEmpty()
+        .filterNot { it.packageName in savedPackages }
     val filteredApps = remember(apps, query) {
         apps.filter { app ->
             app.label.contains(query, ignoreCase = true) ||
@@ -511,15 +576,15 @@ private fun GamePickerDialog(
                     placeholder = "Pesquisar apps",
                 )
 
-                when (val result = catalog) {
-                    CatalogResult.Loading -> LoadingCatalog()
-                    is CatalogResult.Failed -> B13EmptyState(
+                when (val result = appsState) {
+                    AppsLoadState.Idle, AppsLoadState.Loading -> LoadingCatalog()
+                    is AppsLoadState.Failed -> B13EmptyState(
                         title = "Não foi possível listar os apps",
                         message = result.message,
                         actionLabel = "Tentar novamente",
-                        onAction = { retryToken += 1 },
+                        onAction = onRetry,
                     )
-                    is CatalogResult.Loaded -> when {
+                    is AppsLoadState.Loaded -> when {
                         filteredApps.isEmpty() -> B13EmptyState(
                             title = "Nenhum app encontrado",
                             message = "Tente outro nome ou pacote.",
@@ -539,7 +604,7 @@ private fun GamePickerDialog(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(MaterialTheme.shapes.small)
-                                        .clickable { onPick(app.packageName) }
+                                        .clickable { onPick(app) }
                                         .padding(horizontal = 8.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -630,21 +695,208 @@ private fun GameIcon(
 }
 
 @androidx.compose.runtime.Composable
-private fun SettingsPage(context: Context, shizukuReady: Boolean, resumeRevision: Int) {
-    val prefs = remember(context) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+private fun MapsPage(
+    games: List<LibraryGame>,
+    selectedGamePackage: String?,
+    legacyKeymapBackup: String?,
+    onSelect: (String?) -> Unit,
+    onImportLegacy: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            "Mapas por app",
+            color = B13Theme.TextPrimary,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            "Cada app mantém seu próprio perfil salvo no dispositivo.",
+            color = B13Theme.Muted,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        if (games.isEmpty()) {
+            B13EmptyState(
+                title = "Nenhum perfil ainda",
+                message = "Adicione um app na Biblioteca para criar seu perfil.",
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(games, key = LibraryGame::id) { game ->
+                    Card(
+                        onClick = { onSelect(game.packageName) },
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (game.packageName == selectedGamePackage) {
+                                B13Theme.PanelDark
+                            } else {
+                                B13Theme.Panel
+                            },
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            GameIcon(game.packageName, game.label, Modifier.size(42.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                val profileLabel = if (game.profileCount == 1) "perfil" else "perfis"
+                                val mappingLabel = if (game.hasMapping) {
+                                    "mapeamento existente"
+                                } else {
+                                    "sem controles mapeados"
+                                }
+                                Text(
+                                    game.label,
+                                    color = B13Theme.TextPrimary,
+                                    style = MaterialTheme.typography.titleSmall,
+                                )
+                                Text(
+                                    "${game.profileCount} $profileLabel • $mappingLabel",
+                                    color = B13Theme.Muted,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                            if (game.packageName == selectedGamePackage) {
+                                B13StatusIndicator("Selecionado", B13Theme.Success)
+                            }
+                            if (!legacyKeymapBackup.isNullOrBlank() && !game.hasMapping) {
+                                TextButton(onClick = { onImportLegacy(game.packageName) }) {
+                                    Text("Importar mapa antigo")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
-    var indicators by rememberSaveable {
-        mutableStateOf(prefs.getBoolean("indicators", true))
+}
+
+@androidx.compose.runtime.Composable
+private fun MouseDiagnosticsPage(state: MouseDiagnosticsState) {
+    Column(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Diagnóstico do mouse",
+                    color = B13Theme.TextPrimary,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    "Observação passiva: esta tela não injeta nem altera eventos.",
+                    color = B13Theme.Muted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            B13StatusIndicator(
+                if (state.isListening) "Monitorando" else "Pausado",
+                if (state.isListening) B13Theme.Success else B13Theme.Muted,
+            )
+        }
+
+        Text(
+            "${state.devices.size} mouse(s) detectado(s) • ${state.totalEvents} evento(s)",
+            color = B13Theme.TextPrimary,
+            style = MaterialTheme.typography.labelLarge,
+        )
+        if (state.devices.isEmpty()) {
+            B13EmptyState(
+                title = "Nenhum mouse reconhecido",
+                message = "Conecte um mouse e aguarde a atualização do Android.",
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(0.65f),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(state.devices, key = { it.id }) { device ->
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = B13Theme.Panel),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(horizontal = 10.dp, vertical = 7.dp)) {
+                            Text(device.name, color = B13Theme.TextPrimary)
+                            Text(
+                                "${if (device.relativeMotion) "Movimento relativo" else "Movimento absoluto"}" +
+                                    " • ${if (device.buttons) "botões" else "sem botões"}",
+                                color = B13Theme.Muted,
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        Text(
+            "Eventos recentes",
+            color = B13Theme.TextPrimary,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+        )
+        if (state.events.isEmpty()) {
+            Text(
+                "Aguardando movimento, botões ou roda do mouse.",
+                color = B13Theme.Muted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(state.events, key = { "${it.timeMillis}-${it.action}" }) { event ->
+                    Text(
+                        "${event.deviceName}: ${event.action} • Δ ${event.deltaX}, ${event.deltaY}" +
+                            " • roda ${event.scrollX}, ${event.scrollY}" +
+                            " • botões ${event.buttonState}" +
+                            if (event.coalescedEvents > 1) " (${event.coalescedEvents} movimentos agrupados)" else "",
+                        color = B13Theme.TextPrimary,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+        }
     }
+}
+
+@androidx.compose.runtime.Composable
+private fun SettingsPage(
+    context: Context,
+    shizukuReady: Boolean,
+    resumeRevision: Int,
+    indicators: Boolean,
+    onIndicatorsChange: (Boolean) -> Unit,
+    legacyKeymap: String?,
+) {
     var overlayGranted by remember {
         mutableStateOf(Settings.canDrawOverlays(context))
     }
     LaunchedEffect(resumeRevision) {
         overlayGranted = Settings.canDrawOverlays(context)
     }
-    val emergencyKey = remember(prefs, resumeRevision) {
-        Keymap.fromJsonString(prefs.getString("mapping", null)).emergencyKey
+    val emergencyKey = remember(legacyKeymap, resumeRevision) {
+        Keymap.fromJsonString(legacyKeymap).emergencyKey
     }
 
     Row(
@@ -714,8 +966,7 @@ private fun SettingsPage(context: Context, shizukuReady: Boolean, resumeRevision
                     fontWeight = FontWeight.Bold,
                 )
                 SettingSwitch("Mostrar indicadores", indicators) {
-                    indicators = it
-                    prefs.edit().putBoolean("indicators", it).apply()
+                    onIndicatorsChange(it)
                 }
                 SettingsRow("Tecla de emergência", emergencyKey)
                 Text(
@@ -799,63 +1050,6 @@ private fun rememberResumeRevision(): Int {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
     return revision
-}
-
-private fun loadSavedGames(
-    context: Context,
-    prefs: android.content.SharedPreferences,
-    packages: List<String>,
-): CatalogResult {
-    val hasMapping = Keymap.fromJsonString(prefs.getString("mapping", null))
-        .controls
-        .isNotEmpty()
-
-    return try {
-        val games = packages.mapNotNull { packageName ->
-            try {
-                val info = context.packageManager.getApplicationInfo(packageName, 0)
-                GameApp(
-                    packageName = packageName,
-                    label = context.packageManager.getApplicationLabel(info).toString(),
-                    hasMapping = hasMapping,
-                )
-            } catch (error: PackageManager.NameNotFoundException) {
-                Log.w(TAG, "App salvo não está mais instalado: $packageName", error)
-                null
-            }
-        }
-        CatalogResult.Loaded(games)
-    } catch (error: SecurityException) {
-        Log.e(TAG, "O Android bloqueou a leitura dos apps salvos", error)
-        CatalogResult.Failed("O Android bloqueou a leitura dos apps salvos.")
-    }
-}
-
-private fun loadInstalledApps(
-    context: Context,
-    savedPackages: Set<String>,
-): CatalogResult {
-    return try {
-        val launcherIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        val apps = context.packageManager.queryIntentActivities(launcherIntent, 0)
-            .mapNotNull { resolveInfo ->
-                val packageName = resolveInfo.activityInfo?.packageName ?: return@mapNotNull null
-                if (packageName == context.packageName || packageName in savedPackages) {
-                    return@mapNotNull null
-                }
-                GameApp(
-                    packageName = packageName,
-                    label = resolveInfo.loadLabel(context.packageManager).toString(),
-                    hasMapping = false,
-                )
-            }
-            .distinctBy { it.packageName }
-            .sortedBy { it.label.lowercase() }
-        CatalogResult.Loaded(apps)
-    } catch (error: SecurityException) {
-        Log.e(TAG, "O Android bloqueou a listagem de apps instalados", error)
-        CatalogResult.Failed("Verifique a permissão de visibilidade de apps e tente novamente.")
-    }
 }
 
 private fun launchGame(context: Context, packageName: String) {

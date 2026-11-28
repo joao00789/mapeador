@@ -36,8 +36,16 @@ originais sem carregar o catálogo no thread de interface. A orientação é
 definida somente para a atividade do B13 — ela não altera a orientação dos
 jogos iniciados.
 
-O indicador da biblioteca ainda reflete o mapeamento global existente; perfis
-independentes por jogo e a migração do armazenamento continuam pendentes.
+O catálogo e os perfis agora ficam em Room, com preferências em DataStore.
+Na primeira inicialização, apps salvos e configurações antigas são migrados do
+`SharedPreferences` sem apagar o original. O mapa global antigo só é associado
+automaticamente quando existe exatamente um app salvo; com vários apps, ele
+fica preservado para importação manual no perfil escolhido.
+
+A navegação tem Biblioteca, Mapas, Mouse e Configurações. O diagnóstico de mouse
+observa eventos recebidos pela atividade, filtra fontes de mouse para não
+confundir touchscreen, agrupa movimentos rápidos e não injeta eventos. A tela
+não observa eventos enquanto a atividade está em segundo plano.
 
 ## Limitações conhecidas desta primeira versão
 
@@ -46,7 +54,13 @@ independentes por jogo e a migração do armazenamento continuam pendentes.
   vai mostrar os problemas reais — especialmente a parte de injeção de
   toques via reflexão (`InputManager.injectInputEvent`), que depende de como
   cada versão do Android trata APIs ocultas.
-- O keymap é único e global (não um por jogo) — igual à versão anterior.
+- O editor atual ainda expõe controles que não fazem parte do escopo de mouse
+  da V1; a próxima etapa deve limitar a interface do editor ao que está pronto.
+- O diagnóstico passivo mostra somente eventos entregues pelo Android à
+  atividade; ele não representa os eventos capturados diretamente pelo motor
+  Shizuku durante uma sessão de jogo.
+- O editor de keymap ainda usa a implementação existente de overlay e motor;
+  esta atualização não declara a injeção funcional em jogos.
   Suporta os tipos: Toque, Deslizar, Mouse Pick, Joystick (WASD/Setas),
   Mouse FPS e Arrasto de Mouse.
 - Capturar uma tecla física diretamente no editor (apontar e apertar a

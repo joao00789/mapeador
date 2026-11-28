@@ -8,7 +8,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.SharedPreferences
+import android.database.sqlite.SQLiteException
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -26,6 +26,16 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONObject
+import org.json.JSONException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collect
+import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
@@ -42,12 +52,12 @@ class FloatingBubbleService : Service() {
         const val ACTION_STOP = "com.mapeador.action.STOP"
         private const val CHANNEL_ID = "mapeador_bubble"
         private const val NOTIFICATION_ID = 1
-        private const val PREFS_NAME = "mapeador"
     }
 
     private lateinit var windowManager: WindowManager
-    private lateinit var prefs: SharedPreferences
     private val keymap = Keymap()
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    @Volatile private var showKeymapIndicators = true
     private var targetPackage: String = ""
 
     private var bubbleView: FrameLayout? = null
@@ -75,8 +85,22 @@ class FloatingBubbleService : Service() {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-        prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        loadKeymap()
+        serviceScope.launch {
+            (application as B13Application).settingsRepository.showIndicators
+                .catch { error ->
+                    if (error is IOException) {
+                        android.util.Log.e("B13Bubble", "Não foi possível ler a preferência de indicadores", error)
+                    } else {
+                        throw error
+                    }
+                }
+                .collect { show ->
+                    withContext(Dispatchers.Main) {
+                        showKeymapIndicators = show
+                        indicatorsView?.invalidate()
+                    }
+                }
+        }
         startForegroundNotification()
         addBubble()
         addIndicators()
@@ -98,16 +122,21 @@ class FloatingBubbleService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        intent?.getStringExtra(EXTRA_PACKAGE_NAME)?.let { pkg ->
-            targetPackage = pkg
-            startEngine()
+        val packageName = intent?.getStringExtra(EXTRA_PACKAGE_NAME)
+        if (packageName.isNullOrBlank()) {
+            android.util.Log.w("B13Bubble", "Serviço reiniciado sem app selecionado; encerrando sessão órfã")
+            stopSelf()
+            return START_NOT_STICKY
         }
-        return START_STICKY
+        targetPackage = packageName
+        startEngine()
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
         polling = false
         cursorPollingEnabled = false
+        serviceScope.cancel()
         cursorExecutor.shutdownNow()
         ShizukuBridge.stop()
         editorOverlay?.hide()
@@ -127,13 +156,52 @@ class FloatingBubbleService : Service() {
     }
 
     private fun startEngine() {
+        val packageName = targetPackage
+        serviceScope.launch {
+            try {
+                val json = (application as B13Application).gameRepository.loadKeymapJson(packageName)
+                    ?: Keymap().toJsonString()
+                val loaded = Keymap.fromJsonStringStrict(json)
+                withContext(Dispatchers.Main) {
+                    if (targetPackage != packageName) return@withContext
+                    keymap.controls.clear()
+                    keymap.controls += loaded.controls
+                    keymap.emergencyKey = loaded.emergencyKey
+                    keymap.captureKeyboard = loaded.captureKeyboard
+                    keymap.initialMouseMode = loaded.initialMouseMode
+                    bindAndStartEngine(packageName)
+                }
+            } catch (error: SQLiteException) {
+                android.util.Log.e("B13Bubble", "Não foi possível carregar o mapa do app", error)
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        this@FloatingBubbleService,
+                        "Não foi possível carregar o mapa deste app.",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            } catch (error: JSONException) {
+                android.util.Log.e("B13Bubble", "O mapa salvo para o app está inválido", error)
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        this@FloatingBubbleService,
+                        "O mapa salvo está inválido. Os dados originais foram preservados.",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
+    }
+
+    private fun bindAndStartEngine(packageName: String) {
         ShizukuBridge.bind(this) { ok, error ->
+            if (targetPackage != packageName) return@bind
             if (!ok) {
                 android.widget.Toast.makeText(this, "Shizuku: $error", android.widget.Toast.LENGTH_LONG).show()
                 return@bind
             }
             val (w, h) = screenSize()
-            ShizukuBridge.start(targetPackage, w, h, keymap.toJsonString())
+            ShizukuBridge.start(packageName, w, h, keymap.toJsonString())
             polling = true
             mainHandler.post(pollRunnable)
         }
@@ -148,19 +216,37 @@ class FloatingBubbleService : Service() {
 
     // ---------------------------------------------------------------- keymap persistence
 
-    private fun loadKeymap() {
-        val loaded = Keymap.fromJsonString(prefs.getString("mapping", null))
-        keymap.controls.clear()
-        keymap.controls += loaded.controls
-        keymap.emergencyKey = loaded.emergencyKey
-        keymap.captureKeyboard = loaded.captureKeyboard
-        keymap.initialMouseMode = loaded.initialMouseMode
-    }
-
     private fun saveKeymap() {
-        prefs.edit().putString("mapping", keymap.toJsonString()).apply()
-        ShizukuBridge.updateKeymap(keymap.toJsonString())
-        indicatorsView?.invalidate()
+        val packageName = targetPackage
+        val serialized = keymap.toJsonString()
+        val snapshot = Keymap.fromJsonStringStrict(serialized)
+        serviceScope.launch {
+            try {
+                (application as B13Application).gameRepository.saveKeymap(packageName, snapshot)
+                withContext(Dispatchers.Main) {
+                    ShizukuBridge.updateKeymap(serialized)
+                    indicatorsView?.invalidate()
+                }
+            } catch (error: SQLiteException) {
+                android.util.Log.e("B13Bubble", "Não foi possível salvar o mapa", error)
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        this@FloatingBubbleService,
+                        "Não foi possível salvar o mapa.",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            } catch (error: IllegalStateException) {
+                android.util.Log.e("B13Bubble", "Não há perfil para salvar o mapa", error)
+                withContext(Dispatchers.Main) {
+                    android.widget.Toast.makeText(
+                        this@FloatingBubbleService,
+                        error.message ?: "Não há perfil disponível para salvar o mapa.",
+                        android.widget.Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------- notification
@@ -308,7 +394,7 @@ class FloatingBubbleService : Service() {
     // ---------------------------------------------------------------- indicators overlay
 
     private fun addIndicators() {
-        val view = IndicatorsView(this, keymap)
+        val view = IndicatorsView(this, keymap) { showKeymapIndicators }
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT, overlayWindowType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
@@ -322,7 +408,11 @@ class FloatingBubbleService : Service() {
 }
 
 /** Non-interactive overlay drawn over the game: keymap indicators + the own cursor arrow. */
-private class IndicatorsView(context: Context, private val keymap: Keymap) : View(context) {
+private class IndicatorsView(
+    context: Context,
+    private val keymap: Keymap,
+    private val showKeymapIndicators: () -> Boolean,
+) : View(context) {
     private var cursorX = 0f
     private var cursorY = 0f
     private var aimMode = false
@@ -336,8 +426,7 @@ private class IndicatorsView(context: Context, private val keymap: Keymap) : Vie
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val prefs = context.getSharedPreferences("mapeador", Context.MODE_PRIVATE)
-        if (prefs.getBoolean("indicators", true)) {
+        if (showKeymapIndicators()) {
             keymap.controls.forEach { c ->
                 canvas.drawCircle(c.x * width, c.y * height, (48f * c.sizeScale).coerceIn(24f, 120f), circlePaint)
             }
