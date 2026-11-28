@@ -51,7 +51,8 @@ class GameRepository(
 
     suspend fun removeGame(packageName: String) = withContext(Dispatchers.IO) {
         database.withTransaction {
-            gameDao.findByPackage(packageName)?.let(gameDao::delete)
+            val game = gameDao.findByPackage(packageName)
+            if (game != null) gameDao.delete(game)
         }
     }
 
