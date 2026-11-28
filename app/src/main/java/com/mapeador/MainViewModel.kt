@@ -164,36 +164,36 @@ class MainViewModel(
                 Log.e(TAG, "Não foi possível salvar a seleção de jogo", error)
                 mutableLibraryError.value = "Não foi possível salvar a seleção do app."
             }
+        }
+    }
 
-            fun importLegacyKeymap(packageName: String) {
-                val serialized = legacyKeymapBackup.value
-                if (serialized.isNullOrBlank()) {
-                    mutableLibraryError.value = "Não há um mapa legado disponível para importar."
-                    return
+    fun importLegacyKeymap(packageName: String) {
+        val serialized = legacyKeymapBackup.value
+        if (serialized.isNullOrBlank()) {
+            mutableLibraryError.value = "Não há um mapa legado disponível para importar."
+            return
+        }
+        val legacyKeymap = try {
+            Keymap.fromJsonStringStrict(serialized)
+        } catch (error: JSONException) {
+            Log.e(TAG, "O mapa legado não pode ser importado porque está inválido", error)
+            mutableLibraryError.value = "O mapa legado está inválido. O texto original continua preservado."
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                gameRepository.saveKeymap(packageName, legacyKeymap)
+                val current = mutableStartupState.value
+                if (current is StartupState.Ready) {
+                    mutableStartupState.value = current.copy(warning = null)
                 }
-                val legacyKeymap = try {
-                    Keymap.fromJsonStringStrict(serialized)
-                } catch (error: JSONException) {
-                    Log.e(TAG, "O mapa legado não pode ser importado porque está inválido", error)
-                    mutableLibraryError.value = "O mapa legado está inválido. O texto original continua preservado."
-                    return
-                }
-                viewModelScope.launch(Dispatchers.IO) {
-                    try {
-                        gameRepository.saveKeymap(packageName, legacyKeymap)
-                        val current = mutableStartupState.value
-                        if (current is StartupState.Ready) {
-                            mutableStartupState.value = current.copy(warning = null)
-                        }
-                    } catch (error: SQLiteException) {
-                        Log.e(TAG, "Não foi possível importar o mapa legado", error)
-                        mutableLibraryError.value = "Não foi possível importar o mapa: ${error.message.orEmpty()}"
-                    } catch (error: IllegalStateException) {
-                        Log.e(TAG, "O app não possui perfil para receber o mapa legado", error)
-                        mutableLibraryError.value = error.message
-                            ?: "O perfil selecionado não está disponível."
-                    }
-                }
+            } catch (error: SQLiteException) {
+                Log.e(TAG, "Não foi possível importar o mapa legado", error)
+                mutableLibraryError.value = "Não foi possível importar o mapa: ${error.message.orEmpty()}"
+            } catch (error: IllegalStateException) {
+                Log.e(TAG, "O app não possui perfil para receber o mapa legado", error)
+                mutableLibraryError.value = error.message
+                    ?: "O perfil selecionado não está disponível."
             }
         }
     }

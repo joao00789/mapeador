@@ -154,7 +154,8 @@ class MouseDiagnosticsController(context: Context) : InputManager.InputDeviceLis
 
     private fun refreshDevices() {
         val devices = InputDevice.getDeviceIds()
-            .mapNotNull { InputDevice.getDevice(it) }
+            .map { InputDevice.getDevice(it) }
+            .filterNotNull()
             .filter { device ->
                 MouseEventClassifier.isMouseSource(device.sources)
             }

@@ -41,7 +41,9 @@ class GameRepository(
                     iconReference = app.packageName,
                     isInstalled = true,
                     updatedAtMillis = now,
-                ).also(gameDao::update)
+                ).also { updatedGame ->
+                    gameDao.update(updatedGame)
+                }
             }
             ensureDefaultProfile(game)
         }
