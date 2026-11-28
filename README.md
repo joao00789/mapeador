@@ -27,6 +27,18 @@ serviço do Shizuku. Nesta reescrita:
   em vez de Compose, porque um overlay de `WindowManager` fora de uma
   Activity não tem o ciclo de vida que o Compose exige.
 
+## Interface mobile-first
+
+A tela principal do B13 abre em orientação horizontal, com navegação compacta,
+tema Material 3 personalizado e biblioteca adaptável em grade. A busca filtra
+os apps salvos; o seletor consulta os apps instalados e exibe seus ícones
+originais sem carregar o catálogo no thread de interface. A orientação é
+definida somente para a atividade do B13 — ela não altera a orientação dos
+jogos iniciados.
+
+O indicador da biblioteca ainda reflete o mapeamento global existente; perfis
+independentes por jogo e a migração do armazenamento continuam pendentes.
+
 ## Limitações conhecidas desta primeira versão
 
 - **Nada aqui foi testado em aparelho ainda.** Foi escrito e revisado

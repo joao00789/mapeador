@@ -7,7 +7,9 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
+#include <chrono>
 #include <thread>
 #include <jni.h>
 
@@ -60,6 +62,7 @@ public:
 
 private:
     std::mutex lock_;
+    std::condition_variable mouseMotionCv_;
     EvdevManager evdev_;
     Keymap keymap_;
     std::vector<ControlRuntime> runtime_;
@@ -94,6 +97,11 @@ private:
 
     std::thread focusThread_;
     std::atomic<bool> focusRunning_{false};
+    std::thread mouseMotionThread_;
+    std::atomic<bool> mouseMotionRunning_{false};
+    int pendingMouseDeltaX_ = 0;
+    int pendingMouseDeltaY_ = 0;
+    std::chrono::steady_clock::time_point lastMouseMotionAt_{};
 
     std::atomic<int> touchesSent_{0};
     std::atomic<int> touchesFailed_{0};
@@ -114,6 +122,8 @@ private:
     void onKeyEvent(const std::string &devicePath, int code, int value, bool isMouseButton);
     void onSyn();
     void onMouseMove(int dx, int dy);
+    void processMouseMove(int dx, int dy);
+    void mouseMotionLoop();
     void onMouseScroll(float vertical, float horizontal);
     void onKey(const std::string &name, bool down);
     void performBinding(int controlIndex, int direction, bool down);

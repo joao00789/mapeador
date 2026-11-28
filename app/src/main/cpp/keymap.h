@@ -34,10 +34,10 @@ struct Control {
     float cursorX = 0.5f;
     float cursorY = 0.5f;
     bool preventViewFreeze = true;
-    float sensitivityX = 50.0f; // 0..100
-    float sensitivityY = 50.0f; // 0..100
-    int smoothing = 35;        // 0..100
-    float cursorSpeed = 1.6f;
+    float sensitivityX = 80.0f; // 0..100
+    float sensitivityY = 80.0f; // 0..100
+    int smoothing = 0;          // 0..100
+    float cursorSpeed = 3.2f;
     float cursorSize = 1.0f;
     std::string pressMode = "HOLD"; // HOLD or TOGGLE
     int responseMs = 0;         // artificial delay before the touch is released, 0..300

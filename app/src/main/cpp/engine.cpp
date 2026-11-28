@@ -21,6 +21,7 @@ constexpr int ACTION_POINTER_INDEX_SHIFT = 8;
 constexpr int MAX_FINGERS = 10;
 constexpr float SWIPE_DISTANCE_PX = 96.0f;
 constexpr float MAX_MOUSE_SENSITIVITY = 3.0f;
+constexpr auto MOUSE_MOVE_BATCH_INTERVAL = std::chrono::milliseconds(2);
 constexpr float DEFAULT_JOYSTICK_RANGE_PX = 120.0f;
 constexpr int JOYSTICK_RELEASE_GRACE_MS = 80;
 constexpr float CAMERA_REGION_FRACTION = 0.35f;
@@ -114,6 +115,11 @@ void Engine::start(const std::string &packageName, int screenWidthPx, int screen
     androidApiLogInfo(TAG, ("Mouse capturado com exclusividade em " + std::to_string(grabbedMouse) +
         " nó(s); dispositivos encontrados: " + std::to_string(evdev_.deviceCount())).c_str());
     running_ = true;
+    pendingMouseDeltaX_ = 0;
+    pendingMouseDeltaY_ = 0;
+    lastMouseMotionAt_ = {};
+    mouseMotionRunning_ = true;
+    mouseMotionThread_ = std::thread(&Engine::mouseMotionLoop, this);
     evdev_.startReading(
         [this](const RawEvent &e) { onRawEvent(e); },
         [](const std::string &msg) { androidApiLogInfo(TAG, msg.c_str()); });
@@ -126,6 +132,9 @@ void Engine::stop() {
     if (!running_) return;
     running_ = false;
     focusRunning_ = false;
+    mouseMotionRunning_ = false;
+    mouseMotionCv_.notify_all();
+    if (mouseMotionThread_.joinable()) mouseMotionThread_.join();
     if (focusThread_.joinable()) focusThread_.join();
     evdev_.stop();
     releaseAllFingers();
@@ -523,6 +532,46 @@ void Engine::onKey(const std::string &name, bool down) {
 
 void Engine::onMouseMove(int dx, int dy) {
     if (dx == 0 && dy == 0) return;
+    const auto now = std::chrono::steady_clock::now();
+    const bool hasPendingMotion = pendingMouseDeltaX_ != 0 || pendingMouseDeltaY_ != 0;
+    if (!hasPendingMotion &&
+        (lastMouseMotionAt_ == std::chrono::steady_clock::time_point{} ||
+         now - lastMouseMotionAt_ >= MOUSE_MOVE_BATCH_INTERVAL)) {
+        lastMouseMotionAt_ = now;
+        processMouseMove(dx, dy);
+        return;
+    }
+    pendingMouseDeltaX_ += dx;
+    pendingMouseDeltaY_ += dy;
+    lastMouseMotionAt_ = now;
+    mouseMotionCv_.notify_one();
+}
+
+void Engine::mouseMotionLoop() {
+    std::unique_lock<std::mutex> lock(lock_);
+    while (mouseMotionRunning_) {
+        mouseMotionCv_.wait(lock, [this]() {
+            return !mouseMotionRunning_ || pendingMouseDeltaX_ != 0 || pendingMouseDeltaY_ != 0;
+        });
+        if (!mouseMotionRunning_) break;
+
+        mouseMotionCv_.wait_until(
+            lock,
+            std::chrono::steady_clock::now() + MOUSE_MOVE_BATCH_INTERVAL,
+            [this]() { return !mouseMotionRunning_; }
+        );
+        if (!mouseMotionRunning_) break;
+
+        const int dx = pendingMouseDeltaX_;
+        const int dy = pendingMouseDeltaY_;
+        pendingMouseDeltaX_ = 0;
+        pendingMouseDeltaY_ = 0;
+        processMouseMove(dx, dy);
+    }
+}
+
+void Engine::processMouseMove(int dx, int dy) {
+    if (dx == 0 && dy == 0) return;
     if (mouseAimMode_) {
         if (foreground_.load() && !editorMode_.load() && !paused_.load()) {
             // Find the active MOUSE_LOOK control (first one found) for sensitivity.
@@ -570,7 +619,7 @@ void Engine::onMouseMove(int dx, int dy) {
             }
         }
     } else {
-        float cursorSpeed = 1.6f;
+        float cursorSpeed = 3.2f;
         for (const auto &c : keymap_.controls) {
             if (c.type == ControlType::MouseLook) { cursorSpeed = c.cursorSpeed; break; }
         }

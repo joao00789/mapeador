@@ -31,10 +31,10 @@ data class Control(
     var cursorX: Float = 0.5f,
     var cursorY: Float = 0.5f,
     var preventViewFreeze: Boolean = true,
-    var sensitivityX: Float = 50f,
-    var sensitivityY: Float = 50f,
-    var smoothing: Int = 35,
-    var cursorSpeed: Float = 1.6f,
+    var sensitivityX: Float = 80f,
+    var sensitivityY: Float = 80f,
+    var smoothing: Int = 0,
+    var cursorSpeed: Float = 3.2f,
     var cursorSize: Float = 1f,
     var pressMode: String = "HOLD",
     var responseMs: Int = 0,
@@ -63,6 +63,11 @@ data class Control(
     companion object {
         fun fromJson(item: JSONObject): Control? {
             val type = ControlType.fromWire(item.optString("type")) ?: return null
+            val isMouseLook = type == ControlType.MOUSE_LOOK
+            val sensitivityX = item.optDouble("sensitivityX", 80.0).toFloat()
+            val sensitivityY = item.optDouble("sensitivityY", 80.0).toFloat()
+            val smoothing = item.optInt("smoothing", 0)
+            val cursorSpeed = item.optDouble("cursorSpeed", 3.2).toFloat()
             return Control(
                 id = item.optString("id").ifBlank { UUID.randomUUID().toString() },
                 type = type,
@@ -76,10 +81,10 @@ data class Control(
                 cursorX = item.optDouble("cursorX", 0.5).toFloat(),
                 cursorY = item.optDouble("cursorY", 0.5).toFloat(),
                 preventViewFreeze = item.optBoolean("preventViewFreeze", true),
-                sensitivityX = item.optDouble("sensitivityX", 50.0).toFloat(),
-                sensitivityY = item.optDouble("sensitivityY", 50.0).toFloat(),
-                smoothing = item.optInt("smoothing", 35),
-                cursorSpeed = item.optDouble("cursorSpeed", 1.6).toFloat(),
+                sensitivityX = if (isMouseLook && sensitivityX == 50f) 80f else sensitivityX,
+                sensitivityY = if (isMouseLook && sensitivityY == 50f) 80f else sensitivityY,
+                smoothing = if (isMouseLook && smoothing == 35) 0 else smoothing,
+                cursorSpeed = if (isMouseLook && kotlin.math.abs(cursorSpeed - 1.6f) < 0.001f) 3.2f else cursorSpeed,
                 cursorSize = item.optDouble("cursorSize", 1.0).toFloat(),
                 pressMode = item.optString("pressMode", "HOLD"),
                 responseMs = item.optInt("responseMs", 0),

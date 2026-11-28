@@ -4,6 +4,7 @@ import android.app.AlertDialog
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Typeface
@@ -26,7 +27,7 @@ import android.widget.TextView
 import android.widget.Toast
 import kotlin.math.hypot
 
-private const val MUTED_ARGB = 0xFFF3CDD0.toInt()
+private val MUTED_ARGB = B13Theme.MUTED_ARGB
 
 /**
  * Draws every configured [Control] as a draggable circle over the game and
@@ -53,6 +54,12 @@ class EditorCanvasView(
     }
     private val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(200, 255, 255, 255); textAlign = Paint.Align.CENTER; textSize = 36f
+    }
+    private val dragGuidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(220, 80, 220, 255)
+        style = Paint.Style.STROKE
+        strokeWidth = 2f
+        pathEffect = DashPathEffect(floatArrayOf(12f, 8f), 0f)
     }
 
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
@@ -91,6 +98,13 @@ class EditorCanvasView(
         if (keymap.controls.isEmpty()) {
             canvas.drawText("Toque duas vezes em qualquer lugar", width / 2f, height / 2f - 24f, hintPaint)
             canvas.drawText("para criar um controle", width / 2f, height / 2f + 24f, hintPaint)
+        }
+        if (moved && activeIndex in keymap.controls.indices) {
+            val control = keymap.controls[activeIndex]
+            val x = control.x * width
+            val y = control.y * height
+            canvas.drawLine(x, 0f, x, height.toFloat(), dragGuidePaint)
+            canvas.drawLine(0f, y, width.toFloat(), y, dragGuidePaint)
         }
         keymap.controls.forEach { c ->
             val cx = c.x * width
@@ -146,6 +160,7 @@ class EditorCanvasView(
                         }
                     } else if (moved) {
                         onChanged()
+                        invalidate()
                     }
                 }
                 activeIndex = -1
@@ -246,7 +261,7 @@ private fun accentButton(context: Context, label: String, action: () -> Unit): T
         setTextColor(Color.WHITE)
         textSize = 15f
         typeface = Typeface.DEFAULT_BOLD
-        setPadding((20 * density).toInt(), (14 * density).toInt(), (20 * density).toInt(), (14 * density).toInt())
+        setPadding((16 * density).toInt(), (6 * density).toInt(), (16 * density).toInt(), (6 * density).toInt())
         background = pillDrawable(B13Theme.ACCENT_ARGB, density = density)
         isClickable = true
         setOnClickListener { action() }
@@ -276,13 +291,13 @@ private fun buildTopBar(
     val bar = LinearLayout(context).apply {
         orientation = LinearLayout.HORIZONTAL
         setBackgroundColor(B13Theme.PANEL_DARK_ARGB)
-        setPadding((10 * density).toInt(), (10 * density).toInt(), (10 * density).toInt(), (10 * density).toInt())
+        setPadding((8 * density).toInt(), (4 * density).toInt(), (8 * density).toInt(), (4 * density).toInt())
     }
     fun add(label: String, action: () -> Unit) {
         bar.addView(
             accentButton(context, label, action),
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-                .apply { marginEnd = (8 * density).toInt() },
+                .apply { marginEnd = (6 * density).toInt() },
         )
     }
     add("\u2715 Sair", onExit)
@@ -402,6 +417,7 @@ private fun showConfigureDialog(
     }
 
     var pendingDismiss: (() -> Unit)? = null
+    var dismissAfterKeyCapture: (() -> Unit)? = null
 
     if (control.type == ControlType.JOYSTICK) {
         form.addView(sectionTitle(context, "ESQUEMA"))
@@ -436,7 +452,10 @@ private fun showConfigureDialog(
         }
     } else {
         form.addView(sectionTitle(context, "TECLA / BOTÃO"))
-        form.addView(physicalKeyCaptureRow(context, control.key) { captured -> control.key = captured })
+        form.addView(physicalKeyCaptureRow(context, control.key) { captured ->
+            control.key = captured
+            dismissAfterKeyCapture?.invoke()
+        })
 
         form.addView(sectionTitle(context, "TAMANHO"))
         form.addView(labeledSeekBar(context, "Tamanho", 50, 200, (control.sizeScale * 100).toInt()) {
@@ -473,6 +492,11 @@ private fun showConfigureDialog(
         .setNegativeButton("Excluir") { _, _ -> onDelete() }
         .setPositiveButton("OK") { _, _ -> pendingDismiss?.invoke(); onSaved() }
         .create()
+    dismissAfterKeyCapture = {
+        pendingDismiss?.invoke()
+        onSaved()
+        dialog.dismiss()
+    }
     dialog.setOnDismissListener { ShizukuBridge.setKeyCapture(false) }
     dialog.showAsOverlay()
 }

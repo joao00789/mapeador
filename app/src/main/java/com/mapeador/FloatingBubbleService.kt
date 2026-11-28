@@ -26,6 +26,8 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONObject
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
 /**
@@ -55,6 +57,10 @@ class FloatingBubbleService : Service() {
     private var editorOverlay: KeymapEditorOverlay? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val cursorExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "MapeadorCursorUi").apply { isDaemon = true }
+    }
+    @Volatile private var cursorPollingEnabled = false
     private var polling = false
     private val pollRunnable = object : Runnable {
         override fun run() {
@@ -74,6 +80,17 @@ class FloatingBubbleService : Service() {
         startForegroundNotification()
         addBubble()
         addIndicators()
+        cursorExecutor.scheduleWithFixedDelay({
+            if (!cursorPollingEnabled) return@scheduleWithFixedDelay
+            val cursor = ShizukuBridge.cursorPosition() ?: return@scheduleWithFixedDelay
+            if (cursor.size >= 3) {
+                mainHandler.post {
+                    if (cursorPollingEnabled) {
+                        indicatorsView?.updateCursor(cursor[0], cursor[1], cursor[2] > 0.5f)
+                    }
+                }
+            }
+        }, 0L, 16L, TimeUnit.MILLISECONDS)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -90,6 +107,8 @@ class FloatingBubbleService : Service() {
 
     override fun onDestroy() {
         polling = false
+        cursorPollingEnabled = false
+        cursorExecutor.shutdownNow()
         ShizukuBridge.stop()
         editorOverlay?.hide()
         bubbleView?.let { runCatching { windowManager.removeView(it) } }
@@ -123,11 +142,8 @@ class FloatingBubbleService : Service() {
     private fun pollForegroundAndCursor() {
         val diagnostics = ShizukuBridge.diagnostics()
         val foreground = try { JSONObject(diagnostics).optBoolean("foreground", false) } catch (_: Exception) { false }
-        indicatorsView?.visibility = if (foreground && editorOverlay?.isShowing != true) View.VISIBLE else View.GONE
-        val cursor = ShizukuBridge.cursorPosition()
-        if (cursor != null && cursor.size >= 3) {
-            indicatorsView?.updateCursor(cursor[0], cursor[1], cursor[2] > 0.5f)
-        }
+        cursorPollingEnabled = foreground && editorOverlay?.isShowing != true
+        indicatorsView?.visibility = if (cursorPollingEnabled) View.VISIBLE else View.GONE
     }
 
     // ---------------------------------------------------------------- keymap persistence

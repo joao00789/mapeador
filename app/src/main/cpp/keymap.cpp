@@ -66,10 +66,10 @@ Control Control::fromJson(const json::Value &item) {
     c.cursorX = clampf((float) item.getNumber("cursorX", 0.5), 0.0f, 1.0f);
     c.cursorY = clampf((float) item.getNumber("cursorY", 0.5), 0.0f, 1.0f);
     c.preventViewFreeze = item.getBool("preventViewFreeze", true);
-    c.sensitivityX = clampf((float) item.getNumber("sensitivityX", 50.0), 0.0f, 100.0f);
-    c.sensitivityY = clampf((float) item.getNumber("sensitivityY", 50.0), 0.0f, 100.0f);
-    c.smoothing = (int) clampf((float) item.getNumber("smoothing", 35), 0.0f, 100.0f);
-    c.cursorSpeed = clampf((float) item.getNumber("cursorSpeed", 1.6), 0.0f, 4.0f);
+    c.sensitivityX = clampf((float) item.getNumber("sensitivityX", 80.0), 0.0f, 100.0f);
+    c.sensitivityY = clampf((float) item.getNumber("sensitivityY", 80.0), 0.0f, 100.0f);
+    c.smoothing = (int) clampf((float) item.getNumber("smoothing", 0), 0.0f, 100.0f);
+    c.cursorSpeed = clampf((float) item.getNumber("cursorSpeed", 3.2), 0.0f, 4.0f);
     c.cursorSize = clampf((float) item.getNumber("cursorSize", 1.0), 0.6f, 1.8f);
     c.pressMode = item.getString("pressMode", "HOLD");
     c.responseMs = (int) clampf((float) item.getNumber("responseMs", 0), 0.0f, 300.0f);
