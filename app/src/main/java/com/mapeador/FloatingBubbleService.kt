@@ -27,6 +27,8 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import org.json.JSONObject
 import org.json.JSONException
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -65,6 +67,10 @@ class FloatingBubbleService : Service() {
     private var editorOverlay: KeymapEditorOverlay? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val cursorExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "MapeadorCursorUi").apply { isDaemon = true }
+    }
+    @Volatile private var cursorPollingEnabled = false
     private var polling = false
     private val pollRunnable = object : Runnable {
         override fun run() {
@@ -98,6 +104,17 @@ class FloatingBubbleService : Service() {
         startForegroundNotification()
         addBubble()
         addIndicators()
+        cursorExecutor.scheduleWithFixedDelay({
+            if (!cursorPollingEnabled) return@scheduleWithFixedDelay
+            val cursor = ShizukuBridge.cursorPosition() ?: return@scheduleWithFixedDelay
+            if (cursor.size >= 3 && cursorPollingEnabled) {
+                mainHandler.post {
+                    if (cursorPollingEnabled) {
+                        indicatorsView?.updateCursor(cursor[0], cursor[1], cursor[2] > 0.5f)
+                    }
+                }
+            }
+        }, 0L, 16L, TimeUnit.MILLISECONDS)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -118,7 +135,9 @@ class FloatingBubbleService : Service() {
 
     override fun onDestroy() {
         polling = false
+        cursorPollingEnabled = false
         serviceScope.cancel()
+        cursorExecutor.shutdownNow()
         ShizukuBridge.stop()
         editorOverlay?.hide()
         bubbleView?.let { runCatching { windowManager.removeView(it) } }
@@ -190,7 +209,9 @@ class FloatingBubbleService : Service() {
 
     private fun pollForegroundAndCursor() {
         val diagnostics = ShizukuBridge.diagnostics()
-        val foreground = try { JSONObject(diagnostics).optBoolean("foreground", false) } catch (_: Exception) { false }
+        val state = try { JSONObject(diagnostics) } catch (_: JSONException) { JSONObject() }
+        val foreground = state.optBoolean("foreground", false)
+        val mouseCaptured = state.optBoolean("mouseCaptured", false)
         bubbleView?.visibility = if (foreground) View.VISIBLE else View.GONE
         if (!foreground) {
             menuView?.let { menu ->
@@ -204,8 +225,9 @@ class FloatingBubbleService : Service() {
                 saveKeymap()
             }
         }
-        indicatorsView?.visibility =
-            if (foreground && editorOverlay?.isShowing != true) View.VISIBLE else View.GONE
+        val editorShowing = editorOverlay?.isShowing == true
+        indicatorsView?.visibility = if (foreground && !editorShowing) View.VISIBLE else View.GONE
+        cursorPollingEnabled = foreground && !mouseCaptured && !editorShowing
     }
 
     // ---------------------------------------------------------------- keymap persistence
@@ -403,13 +425,26 @@ class FloatingBubbleService : Service() {
     }
 }
 
-/** Non-interactive overlay drawn over the game for keymap position indicators. */
+/** Non-interactive overlay drawn over the game for keymap indicators and the free cursor. */
 private class IndicatorsView(
     context: Context,
     private val keymap: Keymap,
     private val showKeymapIndicators: () -> Boolean,
 ) : View(context) {
+    private var cursorX = 0f
+    private var cursorY = 0f
+    private var cursorInitialized = false
+    private var aimMode = false
     private val circlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(90, 255, 255, 255); style = Paint.Style.STROKE; strokeWidth = 3f }
+    private val arrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; style = Paint.Style.FILL }
+
+    fun updateCursor(x: Float, y: Float, aim: Boolean) {
+        cursorX = x
+        cursorY = y
+        cursorInitialized = true
+        aimMode = aim
+        postInvalidateOnAnimation()
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
@@ -417,6 +452,21 @@ private class IndicatorsView(
             keymap.controls.forEach { c ->
                 canvas.drawCircle(c.x * width, c.y * height, (48f * c.sizeScale).coerceIn(24f, 120f), circlePaint)
             }
+        }
+        if (!aimMode) {
+            val x = if (cursorInitialized) cursorX else width / 2f
+            val y = if (cursorInitialized) cursorY else height / 2f
+            val path = android.graphics.Path().apply {
+                moveTo(x, y)
+                lineTo(x, y + 36f)
+                lineTo(x + 10f, y + 28f)
+                lineTo(x + 18f, y + 40f)
+                lineTo(x + 24f, y + 34f)
+                lineTo(x + 15f, y + 22f)
+                lineTo(x + 24f, y + 18f)
+                close()
+            }
+            canvas.drawPath(path, arrowPaint)
         }
     }
 }
